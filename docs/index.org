@@ -1,0 +1,17 @@
+#+TITLE: Writings of technological nature
+#+SUBTITLE: A weblog by Tim Jäger
+
+#+HTML: <section>
+
+Hello. 
+
+My name is Tim, I'm a programmer at Google.
+
+These are things I have written.
+
+#+HTML: </section>
+
+
+* Index
+** 2020
+- [[file:20201017-measuring-tcp-errors.org][Measuring TCP drops and reorders]] 

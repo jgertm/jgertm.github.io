@@ -1,0 +1,10 @@
+#+TITLE: Measuring TCP drops and reorderings
+#+AUTHOR: Tim Jäger
+#+DATE: 2020-10-17
+
+#+HTML: <section>
+
+My friend and I were recently discussing if it was possible to build a video-chat application where conversational latency is roughly equivalent to signal latency, as given by the speed of light in copper/optic fiber/free space/pudding.
+
+#+HTML: </section>
+
