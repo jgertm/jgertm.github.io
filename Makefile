@@ -1,6 +1,6 @@
 # What to compile by default?
-SOURCES := $(wildcard docs/*.org)
-TARGETS := $(patsubst docs/%.org,www/%.html,$(SOURCES))
+SOURCES := $(wildcard *.org)
+TARGETS := $(patsubst %.org,docs/%.html,$(SOURCES))
 
 STYLES := tufte-css/tufte.css \
 	pandoc.css \
@@ -13,7 +13,7 @@ all: $(TARGETS)
 # Note: you will need pandoc 2 or greater for this to work
 
 ## Generalized rule: how to build a .html file from each .org
-www/%.html: docs/%.org tufte.html5 $(STYLES)
+docs/%.html: %.org tufte.html5 $(STYLES)
 	pandoc \
 		--katex \
 		--section-divs \
@@ -36,4 +36,4 @@ clean:
 # command to give the correct paths to each CSS file.
 .PHONY: docs
 docs:
-	cp -r $(STYLES) tufte-css/et-book/ www/
+	cp -r $(STYLES) tufte-css/et-book/ docs/
