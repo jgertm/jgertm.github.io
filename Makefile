@@ -2,10 +2,10 @@
 SOURCES := $(wildcard *.org)
 TARGETS := $(patsubst %.org,docs/%.html,$(SOURCES))
 
-STYLES := tufte-css/tufte.css \
-	pandoc.css \
-	pandoc-solarized.css \
-	tufte-extra.css
+STYLES := css/tufte-css/tufte.css \
+	css/pandoc.css \
+	css/pandoc-solarized.css \
+	css/tufte-extra.css
 
 .PHONY: all
 all: $(TARGETS)
@@ -13,7 +13,7 @@ all: $(TARGETS)
 # Note: you will need pandoc 2 or greater for this to work
 
 ## Generalized rule: how to build a .html file from each .org
-docs/%.html: %.org tufte.html5 $(STYLES)
+docs/%.html: %.org css/tufte.html5 $(STYLES)
 	pandoc \
 		--katex \
 		--section-divs \
@@ -21,7 +21,7 @@ docs/%.html: %.org tufte.html5 $(STYLES)
 		--filter pandoc-sidenote \
 		--lua-filter=filters/links-to-html.lua \
 		--to html5+smart \
-		--template=tufte \
+		--template=css/tufte \
 		$(foreach style,$(STYLES),--css $(notdir $(style))) \
 		--output $@ \
 		$<
@@ -36,4 +36,4 @@ clean:
 # command to give the correct paths to each CSS file.
 .PHONY: docs
 docs:
-	cp -r $(STYLES) tufte-css/et-book/ docs/
+	cp -r $(STYLES) css/tufte-css/et-book/ docs/
