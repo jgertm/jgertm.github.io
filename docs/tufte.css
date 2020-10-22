@@ -349,7 +349,7 @@ pre > code {
     display: block;
 }
 
-pre.fullwidth > code {
+.fullwidth pre > code {
     width: 90%;
 }
 
