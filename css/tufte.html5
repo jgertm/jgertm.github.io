@@ -66,5 +66,6 @@ $body$
 $for(include-after)$
 $include-after$
 $endfor$
+<a href="https://github.com/jgertm/jgertm.github.io/edit/main/$sourcefile$">Edit this page</a>
 </body>
 </html>
