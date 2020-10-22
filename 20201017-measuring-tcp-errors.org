@@ -1,10 +1,118 @@
-#+TITLE: Measuring TCP drops and reorderings
+#+TITLE: Incidence of TCP out-of-order delivery on the public internet
+#+SUBTITLE: Or: why video calls will continue to suck for the time being.
 #+AUTHOR: Tim Jäger
 #+DATE: 2020-10-17
 
 #+HTML: <section>
 
-My friend and I were recently discussing if it was possible to build a video-chat application where conversational latency is roughly equivalent to signal latency, as given by the speed of light in copper/optic fiber/free space/pudding.
+Is it possible to build a video-chat application where conversational latency is roughly equivalent to signal latency[fn:1]?[fn:2] 
+
+Perhaps.
+
+Building it on top of TCP might not.
 
 #+HTML: </section>
 
+* Contents
+:PROPERTIES:
+:TOC:      :include all :ignore (this)
+:END:
+
+:CONTENTS:
+- [[#background--motivation][Background & motivation]]
+  - [[#protocol-basics][Protocol basics]]
+  - [[#head-of-line-blocking][Head-of-line blocking]]
+  - [[#a-problem-for-video-calls][A problem for video calls]]
+- [[#methodology][Methodology]]
+  - [[#capture-setup][Capture setup]]
+  - [[#traffic-generation][Traffic generation]]
+- [[#results][Results]]
+- [[#conclusion][Conclusion]]
+:END:
+
+* Background & motivation
+
+** Protocol basics
+The internet is a series of tubes. All these tubes form a network. Some networks guarantee delivery and the preservation of message ordering[fn:3], however this one does not.
+
+That's why smart people came up with the /Transmission Control Protocol/ in the primordial age.
+
+By assigning a sequence number to each packet in a session, the receiver can easily detect when a packet got delayed along the way, signal this to the sender, who then re-transmits.
+
+** Head-of-line blocking
+While this approach keeps throughput high, it suffers from a drawback that can manifest in latency: if a previous packet is outstanding, all subsequent packets need to be buffered by the network interface, and cannot be passed to the application, due to the sequential nature of the data.
+
+** A problem for video calls
+This can, in theory, degrade performance of long-lasting sequential interactions, most widely perhaps video-telephony. Video data are large and thus more likely to be spread across multiple packets. A delay in any of these packet thus prevents the entire frame from being processed.
+
+* Methodology
+
+Since the entire point of TCP is to not have to deal with this in issue in practice, we'll have to get clever. Actually we won't, since somebody else already did, immediately before creating Wireshark.
+
+Were it not for this, we would have had to implement our own TCP stack in userspace, or run the loss detection algorithm over UDP[fn:4].
+
+Using Wireshark, we can simply capture the TCP traffic from our network card and then have it search for out-of-order delivery.
+
+** Capture setup
+
+Wireshark can be run from the terminal, which makes it easier to compose workflows.
+
+#+BEGIN_SRC  bash
+$ tshark -f "port 4242" -w /tmp/tcp.pcap & 
+#+END_SRC
+
+Invoked like this, it captures any traffic over port 4242, in any protocol, writes it to the  file ~/tmp/tcp.pcap~, all while running in the background.
+
+** Traffic generation
+
+To achieve a forth-and-back signal[fn:5], we can use ~tcpbin.com~, which is a simple echo server accessible on the public internet. Any traffic sent over port 4242 via TCP will be sent back verbatim.
+
+As for the data being sent, we can read random, megabyte-sized blocks from ~/dev/urandom~ with ~dd~.
+
+#+BEGIN_SRC bash
+$ dd if=/dev/urandom bs=1M count=16 status=progress | nc tcpbin.com 4242
+#+END_SRC
+
+Invoked like this, we get some transfer speed measurements while sending 16 megabytes.
+
+
+#+HTML: <figure class="fullwidth">
+
+#+BEGIN_SRC bash
+
+$ kill $! # stop listening
+
+$ tshark -r /tmp/tcp.pcap | head # look at some traffic
+    1 0.000000000 192.168.86.165 → 45.79.112.203 TCP 74 57570 → 4242 [SYN] Seq=0 Win=64240 Len=0 MSS=1460 SACK_PERM=1 TSval=501505354 TSecr=0 WS=128
+    2 0.260011384 45.79.112.203 → 192.168.86.165 TCP 74 4242 → 57570 [SYN, ACK] Seq=0 Ack=1 Win=28960 Len=0 MSS=1460 SACK_PERM=1 TSval=174454031 TSecr=501505354 WS=128
+    3 0.260111172 192.168.86.165 → 45.79.112.203 TCP 66 57570 → 4242 [ACK] Seq=1 Ack=1 Win=64256 Len=0 TSval=501505614 TSecr=174454031
+    4 0.260342080 192.168.86.165 → 45.79.112.203 TCP 1514 57570 → 4242 [ACK] Seq=1 Ack=1 Win=64256 Len=1448 TSval=501505614 TSecr=174454031
+    5 0.260374527 192.168.86.165 → 45.79.112.203 TCP 1514 57570 → 4242 [PSH, ACK] Seq=1449 Ack=1 Win=64256 Len=1448 TSval=501505614 TSecr=174454031
+    6 0.260407719 192.168.86.165 → 45.79.112.203 TCP 1514 57570 → 4242 [ACK] Seq=2897 Ack=1 Win=64256 Len=1448 TSval=501505614 TSecr=174454031
+    7 0.260420469 192.168.86.165 → 45.79.112.203 TCP 1514 57570 → 4242 [PSH, ACK] Seq=4345 Ack=1 Win=64256 Len=1448 TSval=501505614 TSecr=174454031
+    8 0.261118130 192.168.86.165 → 45.79.112.203 TCP 1514 57570 → 4242 [ACK] Seq=5793 Ack=1 Win=64256 Len=1448 TSval=501505615 TSecr=174454031
+    9 0.261145239 192.168.86.165 → 45.79.112.203 TCP 1514 57570 → 4242 [PSH, ACK] Seq=7241 Ack=1 Win=64256 Len=1448 TSval=501505615 TSecr=174454031
+   10 0.261173055 192.168.86.165 → 45.79.112.203 TCP 1514 57570 → 4242 [ACK] Seq=8689 Ack=1 Win=64256 Len=1448 TSval=501505615 TSecr=174454031
+
+ $ tshark -r /tmp/tcp.pcap | wc -l # count all packets 
+ 15837
+
+ $ tshark -r /tmp/tcp.pcap -Y "tcp.analysis.out_of_order" | wc -l # count out-of-order packets
+ 177
+
+#+END_SRC
+
+#+HTML: </figure>
+
+* Results
+* Conclusion
+
+[fn:1] As given by the speed of light in copper wire/optic fiber/free space/pudding.
+[fn:2] Answers on a postcard please.
+[fn:3] Such as the CAN bus in your car.
+[fn:4] Scientifically known as "counting".
+[fn:5] We mostly care about the back.
+
+# Local Variables:
+# eval: (add-hook 'before-save-hook #'org-make-toc)
+# End:

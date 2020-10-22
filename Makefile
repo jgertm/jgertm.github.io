@@ -13,7 +13,7 @@ all: $(TARGETS)
 # Note: you will need pandoc 2 or greater for this to work
 
 ## Generalized rule: how to build a .html file from each .org
-docs/%.html: %.org css/tufte.html5 $(STYLES)
+docs/%.html: %.org css/tufte.html5 $(STYLES) Makefile css/tufte.html5
 	pandoc \
 		--katex \
 		--section-divs \
