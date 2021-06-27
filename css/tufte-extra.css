@@ -1,2 +1,15 @@
 /* The default x-height for code is slightly too large in side notes */
 .marginnote code, .sidenote code { font-size: 0.9rem; }
+
+@font-face {
+    font-family: "ibm-plex-mono";
+    src: url("ibm-plex-mono/eot/IBMPlexMono-Regular.eot");
+    src: url("ibm-plex-mono/eot/IBMPlexMono-Regular.eot?#iefix") format("embedded-opentype"), url("ibm-plex-mono/woff/IBMPlexMono-Regular.woff") format("woff"), url("ibm-plex-mono/ttf/IBMPlexMono-Regular.ttf") format("truetype");
+    font-weight: normal;
+    font-style: normal;
+    font-display: swap;
+}
+
+code, pre > code {
+    font-family: ibm-plex-mono, Consolas, "Liberation Mono", Menlo, Courier, monospace;
+}
