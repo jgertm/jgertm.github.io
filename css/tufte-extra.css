@@ -12,4 +12,10 @@
 
 code, pre > code {
     font-family: ibm-plex-mono, Consolas, "Liberation Mono", Menlo, Courier, monospace;
+    color: #000;
+}
+
+pre > code {
+    width: 100%;
+    margin-left: 0;
 }
