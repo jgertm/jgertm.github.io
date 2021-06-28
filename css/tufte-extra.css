@@ -10,8 +10,26 @@
     font-display: swap;
 }
 
+@font-face {
+	font-family: 'iosevka-web';
+	font-display: swap;
+	font-weight: 400;
+	font-stretch: normal;
+	font-style: normal;
+	src: url('iosevka/woff2/iosevka-regular.woff2') format('woff2'), url('iosevka/ttf/iosevka-regular.ttf') format('truetype');
+}
+
+@font-face {
+	font-family: 'iosevka-web';
+	font-display: swap;
+	font-weight: 400;
+	font-stretch: normal;
+	font-style: italic;
+	src: url('iosevka/woff2/iosevka-italic.woff2') format('woff2'), url('iosevka/ttf/iosevka-italic.ttf') format('truetype');
+}
+
 code, pre > code {
-    font-family: ibm-plex-mono, Consolas, "Liberation Mono", Menlo, Courier, monospace;
+    font-family: iosevka, Consolas, "Liberation Mono", Menlo, Courier, monospace;
     color: #000;
 }
 
