@@ -1,0 +1,1925 @@
+#+TITLE: Integrating Babashka into Bazel
+#+SUBTITLE: How to get fast Clojure actions in the best-worst build tool
+#+AUTHOR: Tim Jäger
+#+DATE: 2021-06-27
+#+OPTIONS: ^:nil tags:nil
+#+PROPERTY: header-args :eval never
+
+#+HTML: <figure class="fullwidth">
+#+attr_html: :alt Mountain face in the Italian Dolomites, 2016
+[[file:./mountains.jpg]]
+#+HTML: </figure>
+
+#+HTML: <section>
+
+[[https://bazel.build][Bazel]] is the open-source version of Google's internal build tool. It's terrible in many ways, but it can do amazing things if used correctly. [fn:0]
+
+[[https://babashka.org/][Babashka]] is a Clojure executable with a bunch of built-in libraries. It improves upon Clojure by having near-instantaneous process start-up.[fn:1]
+
+In this tutorial, we'll learn how to wrap Babashka so that we can use it from Bazel to build files, execute actions and write tests with the logic for these operations written in Clojure.
+
+These Bazel rules are based on a very similar set of rules I recently implemented [[https://splashfinancial.com/][at work]]. If any of this seems interesting to you, [[https://jobs.lever.co/splashfinancial?lever-via=V3yi7qNnp4][we're hiring]]!
+
+The final version of the code produced herein can be found [[https://github.com/jgertm/jgertm.github.io/tree/main/20210627-integrating-babashka-into-bazel][here]].
+
+#+HTML: </section>
+
+
+* Contents                                                              :TOC:
+- [[#basic-setup][Basic setup]]
+- [[#producing-files-bb_genrule][Producing files: ~bb_genrule~]]
+  - [[#basic-rule-skeleton][Basic rule skeleton]]
+  - [[#invoking-the-rule][Invoking the rule]]
+  - [[#actually-doing-the-work][Actually doing the work]]
+  - [[#including-more-dependencies][Including more dependencies]]
+- [[#performing-side-effects-bb_binary][Performing side-effects: ~bb_binary~]]
+- [[#checking-artifacts-bb_test][Checking artifacts: ~bb_test~]]
+- [[#greetings-to-cupertino-bb_toolchain][Greetings to Cupertino: ~bb_toolchain~]]
+- [[#bonus-round][Bonus round]]
+
+* Basic setup
+
+We begin with an empty directory, perhaps with version control initialized.
+
+To start, we need to tell Bazel how to find the babashka executable (called ~bb~). This is accomplished by adding an entry in the ~WORKSPACE~ file at the root of our, ehh, workspace. This is where all external dependencies of our build system are specified, such as third-party toolchains and downloadable files.
+
+#+HTML: <figure class="fullwidth">
+#+NAME: WORKSPACE.0
+#+BEGIN_SRC python
+# WORKSPACE
+load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")                                                 # (1)
+
+http_archive(
+    name = "babashka",
+    build_file_content = """exports_files(["bb"])""",                                                                # (2)
+    url = "https://github.com/babashka/babashka/releases/download/v0.4.6/babashka-0.4.6-linux-amd64-static.tar.gz",  # (3)
+    sha256 = "aac1be5a441945ebcc6042d2283ac26399895da090437f84123a3124b72fb25a",
+)
+#+END_SRC
+#+HTML: </figure>
+
+At ~(1)~, we import the ~http_archive~ workspace rule that allows us to fetch arbitrary archives from the internet and make them available.
+
+Since most software projects don't use Bazel, we can provide a ~BUILD.bazel~ file using the optional ~build_file_content~ parameter to ~http_archive~ at ~(2)~. In this case, since the archive contains only the compiled ~bb~ executable, we can use the built-in ~exports_files~ function to make it visible. The three leading and trailing double quotes make this a literal string, allowing us to use individual quotes for the filename (~"bb"~).
+
+We specify the URL from the "Releases" tab on the project's Github page at ~(3)~, along with an optional checksum. Astute readers may have noticed that this release only works for Linux users, and they would be correct. We will address this later.
+
+This file should now be available in the workspace. We can verify this by querying all files defined within the ~@babashka~ repository:
+
+#+begin_src
+$ bazel query "@babashka//...:*"
+...
+@babashka//:bb                     # (1)
+@babashka//:BUILD.bazel
+#+end_src
+
+Line ~(1)~ is the Bazel target that we'll use to refer to the executable from the rules that we will be implementing next.
+
+* Producing files: ~bb_genrule~
+
+Re-usable build abstractions are defined as rules in Bazel. These must be written in files that end in ~.bzl~ and are split between interface and implementation.
+
+The primary function of a build system is to produce files by running commands on other files. We will encapsulate this basic operation for the specific case of commands written in Clojure in a rule called ~bb_genrule~[fn:2] .
+
+** Basic rule skeleton
+
+#+HTML: <figure class="fullwidth">
+#+name: babashka.bzl.0
+#+BEGIN_SRC python
+# babashka.bzl
+def _bb_genrule_impl(ctx):
+    pass                                                                        # (1)
+
+bb_genrule = rule(
+    implementation = _bb_genrule_impl,
+    attrs = {
+        "script": attr.label(allow_single_file = [".clj"], mandatory = True),   # (2)
+        "out": attr.output(mandatory = True),                                   # (3)
+        "_bb": attr.label(                                                      # (4)
+            executable = True,
+            allow_single_file = True,
+            cfg = "exec",
+            default = "@babashka//:bb",
+        ),
+    },
+)
+#+end_src
+#+HTML: </figure>
+
+This is the basic body of any Bazel rule. We have an implementation function that we leave empty for now at ~(1)~.
+
+The ~rule~ function defines the actual rule and refers to the implementation function. It also specifies the interface that we will use to invoke the rule later on in the ~attrs~ parameter.
+
+We specify a ~script~ parameter which will be the Clojure file that we want Babashka to execute at ~(2)~.
+
+We also specify what we want the output file to be called at ~(3)~.
+Lastly, we specify an implicit parameter that won't be specified at the usage site to inject the ~bb~ executable that we provisioned earlier at ~(4)~.
+
+Further choices and options for attributes can be found in the [[https://docs.bazel.build/versions/main/skylark/lib/attr.html][Bazel docs]].
+
+** Invoking the rule
+
+As an example, we will use ~bb_genrule~ to define a target ~babashka_metadata~ that produces a file ~bb-metadata.edn~ that contains information about the version of Babashka that we provisioned.
+
+#+name: BUILD.bazel.0
+#+BEGIN_SRC python
+# BUILD.bazel
+load("//:babashka.bzl", "bb_genrule")        # (1)
+
+bb_genrule(
+    name = "babashka_metadata",
+    script = ":get_babashka_metadata.clj",   # (2)
+    out = "bb-metadata.edn",
+)
+#+end_src
+
+Rule invocation occurs in files named ~BUILD.bazel~.
+To be able to use the rule we just defined, we need to import it at ~(1)~.
+We invoke the rule with a script from the same directory that we will create promptly at ~(2)~.
+
+We also write this script that just prints the babashka version to the terminal. This won't work yet, but it'll allow us to get one step closer to a working rule:
+
+#+name: get_babashka_metadata.clj.0
+#+BEGIN_SRC clojure
+;; get_babashka_metadata.clj
+(ns get-babashka-metadata
+  (:require
+   [clojure.pprint :refer [pprint]]))
+
+(let [metadata {:version (System/getProperty "babashka.version")}]
+  (pprint metadata))
+#+end_src
+
+With all the necessary pieces in place, we can give it a try:
+#+HTML: <figure class="fullwidth">
+#+begin_src
+$ bazel query //...
+...
+//:babashka_metadata
+Loading: 1 packages loaded
+
+$ bazel build //babashka_metadata
+ERROR: $WORKSPACE/BUILD.bazel:4:11: in bb_genrule rule //:babashka_metadata:
+The following files have no generating action:
+bb-metadata.edn                                                                                                            # (1)
+ERROR: Analysis of target '//:babashka_metadata' failed; build aborted: Analysis of target '//:babashka_metadata' failed
+INFO: Elapsed time: 0.143s
+INFO: 0 processes.
+FAILED: Build did NOT complete successfully (2 packages loaded, 2 targets configured)
+#+end_src
+#+HTML: </figure>
+
+Bazel recognized the targets, but errors when prompted to build it. This is because it can tell from the implementation of the rule that the file ~bb-metadata.edn~ is not being produced yet at ~(1)~. Let's fix that!
+
+** Actually doing the work
+
+#+name: babashka.bzl.1
+#+BEGIN_SRC python :exports none
+# babashka.bzl
+def _bb_genrule_impl(ctx):
+    ctx.actions.run(                       # (1)
+        inputs = [ctx.file.script],        # (2)
+        outputs = [ctx.outputs.out],       # (3)
+        executable = ctx.executable._bb,   # (4)
+        arguments = [
+            ctx.file.script.path,          # (5)
+        ],
+    )
+
+bb_genrule = rule(
+    implementation = _bb_genrule_impl,
+    attrs = {
+        "script": attr.label(allow_single_file = [".clj"], mandatory = True),
+        "out": attr.output(mandatory = True),
+        "_bb": attr.label(
+            executable = True,
+            allow_single_file = True,
+            cfg = "exec",
+            default = "@babashka//:bb",
+        ),
+    },
+)
+#+end_src
+
+#+BEGIN_SRC bash :results verbatim :exports results :noweb yes :wrap SRC diff :eval yes
+set -x
+cat | sed -E 's/\s+[#;]\s*\([0-9]+\)\s*$//' >babashka.bzl.0 <<'EOF'
+<<babashka.bzl.0>>
+EOF
+
+cat >babashka.bzl.1 <<'EOF'
+<<babashka.bzl.1>>
+EOF
+
+diff -u babashka.bzl.0 babashka.bzl.1
+rm -f babashka.bzl.0 babashka.bzl.1
+#+END_SRC
+
+#+RESULTS:
+#+begin_SRC diff
+--- babashka.bzl.0
++++ babashka.bzl.1
+@@ -1,6 +1,13 @@
+ # babashka.bzl
+ def _bb_genrule_impl(ctx):
+-    pass
++    ctx.actions.run(                       # (1)
++        inputs = [ctx.file.script],        # (2)
++        outputs = [ctx.outputs.out],       # (3)
++        executable = ctx.executable._bb,   # (4)
++        arguments = [
++            ctx.file.script.path,          # (5)
++        ],
++    )
+ 
+ bb_genrule = rule(
+     implementation = _bb_genrule_impl,
+#+end_SRC
+
+By calling the ~run~ action at ~(1)~, we tell Bazel to call a program with the arguments that we specify.
+
+In our case, the program we want to call can be found under the ~ctx.file._bb~ field (at ~(4)~) because of how we specified the ~_bb~ attribute in the rule interface.
+
+The only argument we pass, for now, is the path to the script at ~(5)~, since that will cause Babashka to execute the file.
+
+We also need to specify the input files (at ~(2)~) and expected output files (at ~(3)~) of this execution, otherwise they won't be available within the sandbox that Bazel uses to isolate commands.
+
+Now that Bazel knows what to do, we can try again:
+
+#+HTML: <figure class="fullwidth">
+#+begin_src
+$ bazel build //:babashka_metadata
+INFO: Analyzed target //:babashka_metadata (0 packages loaded, 0 targets configured).
+INFO: Found 1 target...
+INFO: From Action bb-metadata.edn:
+{:version "0.4.6"}                                                                                        # (1)
+ERROR: $WORKSPACE/BUILD.bazel:4:11: output 'bb-metadata.edn' was not created                              # (2)
+ERROR: $WORKSPACE/BUILD.bazel:4:11: Action bb-metadata.edn failed: not all outputs were created or valid
+Target //:babashka_metadata failed to build
+Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: 0.082s, Critical Path: 0.05s
+INFO: 2 processes: 1 internal, 1 linux-sandbox.
+FAILED: Build did NOT complete successfully
+#+end_src
+#+HTML: </figure>
+
+Still broken, but as we see at ~(1)~, our script is being run and producing output, in accordance with the call to ~clojure.pprint/pprint~.
+
+The issue is that we are not writing the EDN to the output file. To do that, we need to pass the path of the output file to the script:
+
+#+name: get_babashka_metadata.clj.1
+#+begin_src clojure :exports none
+;; get_babashka_metadata.clj
+(ns get-babashka-metadata
+  (:require [clojure.edn :as edn]
+            [clojure.java.io :as io]
+            [clojure.pprint :refer [pprint]]))
+
+(let [{:keys [out-file]} (edn/read-string (first *command-line-args*))   ; (1)
+      metadata {:version (System/getProperty "babashka.version")}]
+  (pprint metadata)
+  (spit (io/file out-file) metadata))                                    ; (2)
+#+end_src
+
+#+BEGIN_SRC bash :results verbatim :exports results :noweb yes :wrap SRC diff :eval yes
+cat | sed -E 's/\s+[#;]\s*\([0-9]+\)\s*$//' >get_babashka_metadata.clj.0 <<'EOF'
+<<get_babashka_metadata.clj.0>>
+EOF
+
+cat >get_babashka_metadata.clj.1 <<'EOF'
+<<get_babashka_metadata.clj.1>>
+EOF
+
+diff -u get_babashka_metadata.clj.0 get_babashka_metadata.clj.1
+rm -f get_babashka_metadata.clj.0 get_babashka_metadata.clj.1
+#+END_SRC
+
+#+RESULTS:
+#+begin_SRC diff
+--- get_babashka_metadata.clj.0
++++ get_babashka_metadata.clj.1
+@@ -1,7 +1,10 @@
+ ;; get_babashka_metadata.clj
+ (ns get-babashka-metadata
+-  (:require
+-   [clojure.pprint :refer [pprint]]))
++  (:require [clojure.edn :as edn]
++            [clojure.java.io :as io]
++            [clojure.pprint :refer [pprint]]))
+ 
+-(let [metadata {:version (System/getProperty "babashka.version")}]
+-  (pprint metadata))
++(let [{:keys [out-file]} (edn/read-string (first *command-line-args*))   ; (1)
++      metadata {:version (System/getProperty "babashka.version")}]
++  (pprint metadata)
++  (spit (io/file out-file) metadata))                                    ; (2)
+#+end_SRC
+
+At ~(1)~, we modified our script to parse the first command line argument as EDN and then bind the ~out-file~ key.
+
+At ~(2)~ we then write the map to that path.
+
+To supply that first argument, we need to slightly change the way ~bb~ is called:
+
+#+name: babashka.bzl.2
+#+BEGIN_SRC python :exports none
+# babashka.bzl
+def _bb_genrule_impl(ctx):
+    ctx.actions.run(
+        inputs = [ctx.file.script],
+        outputs = [ctx.outputs.out],
+        executable = ctx.executable._bb,
+        arguments = [
+            ctx.file.script.path,
+            """{{
+            :out-file "{out_file}"
+            }}""".format(
+                out_file = ctx.outputs.out.path,
+            ),
+        ],
+    )
+
+bb_genrule = rule(
+    implementation = _bb_genrule_impl,
+    attrs = {
+        "script": attr.label(allow_single_file = [".clj"], mandatory = True),
+        "out": attr.output(mandatory = True),
+        "_bb": attr.label(
+            executable = True,
+            allow_single_file = True,
+            cfg = "exec",
+            default = "@babashka//:bb",
+        ),
+    },
+)
+#+end_src
+
+#+BEGIN_SRC bash :results verbatim :exports results :noweb yes :wrap SRC diff :eval yes
+set -x
+cat | sed -E 's/\s+[#;]\s*\([0-9]+\)\s*$//' >babashka.bzl.1 <<'EOF'
+<<babashka.bzl.1>>
+EOF
+
+cat >babashka.bzl.2 <<'EOF'
+<<babashka.bzl.2>>
+EOF
+
+diff -u babashka.bzl.1 babashka.bzl.2
+rm -f babashka.bzl.1 babashka.bzl.2
+#+END_SRC
+
+#+RESULTS:
+#+begin_SRC diff
+--- babashka.bzl.1
++++ babashka.bzl.2
+@@ -6,6 +6,11 @@
+         executable = ctx.executable._bb,
+         arguments = [
+             ctx.file.script.path,
++            """{{
++            :out-file "{out_file}"
++            }}""".format(
++                out_file = ctx.outputs.out.path,
++            ),
+         ],
+     )
+ 
+#+end_SRC
+
+This is how we create a Clojure map (~{:some-key "its value"}~) in Starlark and pass it as a command line argument: the triple-quotes are necessary since we want to wrap the file path in a single pair of quotes. The doule braces turn into single braces, whereas ~{out-file}~ gets replaced with the substitution that we specify in the call to format.
+
+Keep in mind that, despite this being the /second/ argument to ~bb~, it's the /first/ argument that the script will see.
+
+Now, building the target succeeds:
+
+#+HTML: <figure class="fullwidth">
+#+begin_src
+$ bazel build //:babashka_metadata
+INFO: Analyzed target //:babashka_metadata (2 packages loaded, 3 targets configured).
+INFO: Found 1 target...
+INFO: From Action bb-metadata.edn:
+{:version "0.4.6"}
+Target //:babashka_metadata up-to-date:
+  bazel-bin/bb-metadata.edn          # (1)
+INFO: Elapsed time: 0.148s, Critical Path: 0.04s
+INFO: 2 processes: 1 internal, 1 linux-sandbox.
+INFO: Build completed successfully, 2 total actions
+
+$ cat -n bazel-bin/bb-metadata.edn   # (2)
+     1  {:version "0.4.6"}
+#+end_src
+#+HTML: </figure>
+
+Bazel helpfully prints the path, /relative to the workspace root,/ where the output file can be found at ~(1)~.
+
+As we see at ~(2)~, the output is consistent with the version that we downloaded in the ~WORKSPACE~ file.
+
+** Including more dependencies
+
+It's not unusual to have have additional files as dependencies to a build step. To support this in our rule, we have to add an attribute:
+
+#+HTML: <figure class="fullwidth">
+#+name: babashka.bzl.3
+#+BEGIN_SRC python :exports none
+# babashka.bzl
+def _bb_genrule_impl(ctx):
+    ctx.actions.run(
+        inputs = [ctx.file.script] + ctx.files.data,
+        outputs = [ctx.outputs.out],
+        executable = ctx.executable._bb,
+        arguments = [
+            ctx.file.script.path,
+            """{{
+            :out-file "{out_file}"
+            :data [{data}]
+            }}""".format(
+                out_file = ctx.outputs.out.path,
+                data = " ".join(["\"{}\"".format(data.path) for data in ctx.files.data]),
+            ),
+        ],
+    )
+
+bb_genrule = rule(
+    implementation = _bb_genrule_impl,
+    attrs = {
+        "script": attr.label(allow_single_file = [".clj"], mandatory = True),
+        "out": attr.output(mandatory = True),
+        "data": attr.label_list(allow_files = True),
+        "_bb": attr.label(
+            executable = True,
+            allow_single_file = True,
+            cfg = "exec",
+            default = "@babashka//:bb",
+        ),
+    },
+)
+#+end_src
+
+#+BEGIN_SRC bash :results verbatim :exports results :noweb yes :wrap SRC diff :eval yes
+set -x
+cat | sed -E 's/\s+[#;]\s*\([0-9]+\)\s*$//' >babashka.bzl.2 <<'EOF'
+<<babashka.bzl.2>>
+EOF
+
+cat >babashka.bzl.3 <<'EOF'
+<<babashka.bzl.3>>
+EOF
+
+diff -u babashka.bzl.2 babashka.bzl.3
+rm -f babashka.bzl.2 babashka.bzl.3
+#+END_SRC
+
+#+RESULTS:
+#+begin_SRC diff
+--- babashka.bzl.2
++++ babashka.bzl.3
+@@ -1,15 +1,17 @@
+ # babashka.bzl
+ def _bb_genrule_impl(ctx):
+     ctx.actions.run(
+-        inputs = [ctx.file.script],
++        inputs = [ctx.file.script] + ctx.files.data,
+         outputs = [ctx.outputs.out],
+         executable = ctx.executable._bb,
+         arguments = [
+             ctx.file.script.path,
+             """{{
+             :out-file "{out_file}"
++            :data [{data}]
+             }}""".format(
+                 out_file = ctx.outputs.out.path,
++                data = " ".join(["\"{}\"".format(data.path) for data in ctx.files.data]),
+             ),
+         ],
+     )
+@@ -19,6 +21,7 @@
+     attrs = {
+         "script": attr.label(allow_single_file = [".clj"], mandatory = True),
+         "out": attr.output(mandatory = True),
++        "data": attr.label_list(allow_files = True),
+         "_bb": attr.label(
+             executable = True,
+             allow_single_file = True,
+#+end_SRC
+#+HTML: </figure>
+
+We add the ~data~ attribute as a list of targets and files and include it in the EDN map that is the first argument as the ~:data~ key, formatted as a Clojure vector.
+It's important to add the files to the ~run~ action inputs, otherwise there will be no files visible to the script at the paths under the ~:data~ key!
+
+To test this attribute, we can create a dummy file and add it to the ~data~ argument of ~babashka_metadata~ and modify the script to read the data argument and include the contents of the files in its output:
+
+#+name: DUMMY
+#+BEGIN_SRC text :exports none :tangle ./20210627-integrating-babashka-into-bazel/DUMMY
+THIS IS THE CONTENT OF THE DUMMY FILE
+#+end_src
+
+#+name: BUILD.bazel.1
+#+BEGIN_SRC python :exports none
+# BUILD.bazel
+load("//:babashka.bzl", "bb_genrule")
+
+bb_genrule(
+    name = "babashka_metadata",
+    script = ":get_babashka_metadata.clj",
+    out = "bb-metadata.edn",
+    data = [
+        ":DUMMY",
+    ],
+)
+#+end_src
+
+#+BEGIN_SRC bash :results verbatim :exports results :noweb yes :wrap SRC diff :eval yes
+set -x
+cat | sed -E 's/\s+[#;]\s*\([0-9]+\)\s*$//' >BUILD.bazel.0 <<'EOF'
+<<BUILD.bazel.0>>
+EOF
+
+cat >BUILD.bazel.1 <<'EOF'
+<<BUILD.bazel.1>>
+EOF
+
+diff -u BUILD.bazel.0 BUILD.bazel.1
+rm -f BUILD.bazel.0 BUILD.bazel.1
+#+END_SRC
+
+#+RESULTS:
+#+begin_SRC diff
+--- BUILD.bazel.0
++++ BUILD.bazel.1
+@@ -5,4 +5,7 @@
+     name = "babashka_metadata",
+     script = ":get_babashka_metadata.clj",
+     out = "bb-metadata.edn",
++    data = [
++        ":DUMMY",
++    ],
+ )
+#+end_SRC
+
+#+name: get_babashka_metadata.clj.2
+#+begin_src clojure :exports none :tangle ./20210627-integrating-babashka-into-bazel/get_babashka_metadata.clj
+;; get_babashka_metadata.clj
+(ns get-babashka-metadata
+  (:require [clojure.edn :as edn]
+            [clojure.java.io :as io]
+            [clojure.pprint :refer [pprint]]))
+
+(let [{:keys [data out-file]} (edn/read-string (first *command-line-args*))
+      metadata {:version (System/getProperty "babashka.version")
+                :data (mapv slurp data)}]
+  (pprint metadata)
+  (spit (io/file out-file) metadata))
+#+end_src
+
+#+BEGIN_SRC bash :results verbatim :exports results :noweb yes :wrap SRC diff :eval yes
+cat | sed -E 's/\s+[#;]\s*\([0-9]+\)\s*$//' >get_babashka_metadata.clj.1 <<'EOF'
+<<get_babashka_metadata.clj.1>>
+EOF
+
+cat >get_babashka_metadata.clj.2 <<'EOF'
+<<get_babashka_metadata.clj.2>>
+EOF
+
+diff -u get_babashka_metadata.clj.1 get_babashka_metadata.clj.2
+rm -f get_babashka_metadata.clj.1 get_babashka_metadata.clj.2
+#+END_SRC
+
+#+RESULTS:
+#+begin_SRC diff
+--- get_babashka_metadata.clj.1
++++ get_babashka_metadata.clj.2
+@@ -4,7 +4,8 @@
+             [clojure.java.io :as io]
+             [clojure.pprint :refer [pprint]]))
+ 
+-(let [{:keys [out-file]} (edn/read-string (first *command-line-args*))
+-      metadata {:version (System/getProperty "babashka.version")}]
++(let [{:keys [data out-file]} (edn/read-string (first *command-line-args*))
++      metadata {:version (System/getProperty "babashka.version")
++                :data (mapv slurp data)}]
+   (pprint metadata)
+   (spit (io/file out-file) metadata))
+#+end_SRC
+
+If we re-run the build now, we can see the updated output:
+
+#+HTML: <figure class="fullwidth">
+#+begin_src
+$ cat --show-all DUMMY
+THIS IS THE CONTENT OF THE DUMMY FILE$
+
+$ bazel build //:babashka_metadata
+INFO: Analyzed target //:babashka_metadata (0 packages loaded, 0 targets configured).
+INFO: Found 1 target...
+Target //:babashka_metadata up-to-date:
+  bazel-bin/bb-metadata.edn
+INFO: Elapsed time: 0.066s, Critical Path: 0.00s
+INFO: 1 process: 1 internal.
+INFO: Build completed successfully, 1 total action
+
+$ cat bazel-bin/bb-metadata.edn
+{:version "0.4.6", :data ["THIS IS THE CONTENT OF THE DUMMY FILE\n"]}%
+#+end_src
+#+HTML: </figure>
+
+* Performing side-effects: ~bb_binary~
+
+Next, we want to be able to integrate tasks that occur during deployment into Bazel, and we want to write the logic for those in Clojure as well.
+
+Examples of such tasks could be uploading an artifact to a remote or sending a notification on Slack after a successful deployment.
+
+To support this, we will add another rule:
+
+#+name: babashka.bzl.4
+#+BEGIN_SRC python :exports none
+# babashka.bzl
+def _bb_genrule_impl(ctx):
+    ctx.actions.run(
+        inputs = [ctx.file.script] + ctx.files.data,
+        outputs = [ctx.outputs.out],
+        executable = ctx.executable._bb,
+        arguments = [
+            ctx.file.script.path,
+            """{{
+            :out-file "{out_file}"
+            :data [{data}]
+            }}""".format(
+                out_file = ctx.outputs.out.path,
+                data = " ".join(["\"{}\"".format(data.path) for data in ctx.files.data]),
+            ),
+        ],
+    )
+
+bb_genrule = rule(
+    implementation = _bb_genrule_impl,
+    attrs = {
+        "script": attr.label(allow_single_file = [".clj"], mandatory = True),
+        "out": attr.output(mandatory = True),
+        "data": attr.label_list(allow_files = True),
+        "_bb": attr.label(
+            executable = True,
+            allow_single_file = True,
+            cfg = "exec",
+            default = "@babashka//:bb",
+        ),
+    },
+)
+
+def _bb_binary_impl(ctx):
+    executable = ctx.actions.declare_file(ctx.label.name)                    # (1)
+    ctx.actions.write(                                                       # (2)
+        output = executable,
+        is_executable = True,
+        content = """
+        set -x
+        exec {bb} {src} {arguments} "$@"                                     # (3)
+        """.format(
+            bb = ctx.executable._bb.path,
+            src = ctx.file.src.path,
+            arguments = " ".join(ctx.attr.arguments),
+        ),
+    )
+
+    return DefaultInfo(
+        executable = executable,                                             # (4)
+    )
+
+bb_binary = rule(
+    implementation = _bb_binary_impl,
+    executable = True,                                                       # (5)
+    attrs = {
+        "src": attr.label(
+            allow_single_file = [".clj"],
+            mandatory = True,
+        ),
+        "arguments": attr.string_list(),
+        "_bb": attr.label(
+            executable = True,
+            allow_single_file = True,
+            cfg = "exec",
+            default = "@babashka//:bb",
+        ),
+    },
+)
+#+end_src
+
+#+BEGIN_SRC bash :results verbatim :exports results :noweb yes :wrap SRC diff :eval yes
+set -x
+cat | sed -E 's/\s+[#;]\s*\([0-9]+\)\s*$//' >babashka.bzl.3 <<'EOF'
+<<babashka.bzl.3>>
+EOF
+
+cat >babashka.bzl.4 <<'EOF'
+<<babashka.bzl.4>>
+EOF
+
+diff -u babashka.bzl.3 babashka.bzl.4
+rm -f babashka.bzl.3 babashka.bzl.4
+#+END_SRC
+
+#+RESULTS:
+#+begin_SRC diff
+--- babashka.bzl.3
++++ babashka.bzl.4
+@@ -30,3 +30,40 @@
+         ),
+     },
+ )
++
++def _bb_binary_impl(ctx):
++    executable = ctx.actions.declare_file(ctx.label.name)                    # (1)
++    ctx.actions.write(                                                       # (2)
++        output = executable,
++        is_executable = True,
++        content = """
++        set -x
++        exec {bb} {src} {arguments} "$@"                                     # (3)
++        """.format(
++            bb = ctx.executable._bb.path,
++            src = ctx.file.src.path,
++            arguments = " ".join(ctx.attr.arguments),
++        ),
++    )
++
++    return DefaultInfo(
++        executable = executable,                                             # (4)
++    )
++
++bb_binary = rule(
++    implementation = _bb_binary_impl,
++    executable = True,                                                       # (5)
++    attrs = {
++        "src": attr.label(
++            allow_single_file = [".clj"],
++            mandatory = True,
++        ),
++        "arguments": attr.string_list(),
++        "_bb": attr.label(
++            executable = True,
++            allow_single_file = True,
++            cfg = "exec",
++            default = "@babashka//:bb",
++        ),
++    },
++)
+#+end_SRC
+
+The basic structure of this rule should look familiar now, however, there are some differences worth calling out:
+
+We want targets created by this rule to be executable via ~bazel run~. This mean we are creating an executable rule, as seen at ~(5)~.
+
+Before we can run an executable target, it needs to be built. This is what we are actually doing in the implementation function, by declaring a file at ~(1)~ and then creating that file by writing to it at ~(2)~. This file will simply contain shell commands, the operative one being ~exec~ (at ~(3)~) to start the actual command. Note that the command won't run at this stage of the build, it is simply being written to a file in the build sandbox.
+
+It is expected for an executable rule to return a [[https://docs.bazel.build/versions/main/skylark/lib/DefaultInfo.html][~DefaultInfo~]] [[https://docs.bazel.build/versions/main/skylark/rules.html#providers][provider]] with the ~executable~ field set to the file that will be executed, as seen at ~(4)~.
+
+Take note of the trailing ~"$@"~, this enables injection of trailing arguments from the Bazel invocation (e.g. ~bazel run //:binary_target -- foo bar~).
+
+To inspect the result of the expansion, we can define a target and build it:
+
+#+name: hello.clj
+#+BEGIN_SRC clojure :exports none :tangle ./20210627-integrating-babashka-into-bazel/hello.clj
+; hello.clj
+(println "hello there!")
+#+end_src
+
+#+name: BUILD.bazel.2
+#+BEGIN_SRC python :exports none
+# BUILD.bazel
+load("//:babashka.bzl", "bb_genrule", "bb_binary")
+
+bb_genrule(
+    name = "babashka_metadata",
+    script = ":get_babashka_metadata.clj",
+    out = "bb-metadata.edn",
+    data = [
+        ":DUMMY",
+    ],
+)
+
+bb_binary(
+    name = "say_hello",
+    src = ":hello.clj",
+)
+#+end_src
+
+#+BEGIN_SRC bash :results verbatim :exports results :noweb yes :wrap SRC diff :eval yes
+set -x
+cat | sed -E 's/\s+[#;]\s*\([0-9]+\)\s*$//' >BUILD.bazel.1 <<'EOF'
+<<BUILD.bazel.1>>
+EOF
+
+cat >BUILD.bazel.2 <<'EOF'
+<<BUILD.bazel.2>>
+EOF
+
+diff -u BUILD.bazel.1 BUILD.bazel.2
+rm -f BUILD.bazel.1 BUILD.bazel.2
+#+END_SRC
+
+#+RESULTS:
+#+begin_SRC diff
+--- BUILD.bazel.1
++++ BUILD.bazel.2
+@@ -1,5 +1,5 @@
+ # BUILD.bazel
+-load("//:babashka.bzl", "bb_genrule")
++load("//:babashka.bzl", "bb_genrule", "bb_binary")
+ 
+ bb_genrule(
+     name = "babashka_metadata",
+@@ -8,4 +8,9 @@
+     data = [
+         ":DUMMY",
+     ],
++)
++
++bb_binary(
++    name = "say_hello",
++    src = ":hello.clj",
+ )
+#+end_SRC
+
+#+begin_src 
+$ bazel build //:say_hello
+INFO: Analyzed target //:say_hello (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+Target //:say_hello up-to-date:
+  bazel-bin/say_hello
+INFO: Elapsed time: 2.320s, Critical Path: 0.02s
+INFO: 2 processes: 2 internal.
+INFO: Build completed successfully, 2 total actions
+
+$ cat bazel-bin/say_hello
+        set -x
+        exec external/babashka/bb hello.clj  "$@"
+        %
+#+end_src
+
+However, when we try to run it, there is an issue:
+
+#+HTML: <figure class="fullwidth">
+#+begin_src 
+$ bazel run //:say_hello  
+INFO: Analyzed target //:say_hello (2 packages loaded, 3 targets configured).
+INFO: Found 1 target...
+Target //:say_hello up-to-date:
+  bazel-bin/say_hello
+INFO: Elapsed time: 0.151s, Critical Path: 0.01s
+INFO: 3 processes: 3 internal.
+INFO: Build completed successfully, 3 total actions
+INFO: Build completed successfully, 3 total actions
+++ exec external/babashka/bb hello.clj
+$LONGPATH/say_hello: line 3: $LONGPATH/say_hello.runfiles/__main__/external/babashka/bb: No such file or directory
+#+end_src
+#+HTML: </figure>
+
+As we see on the last line, some files can't be found. To fix this, we need to add the ~runfiles~ attribute to the ~DefaultInfo~ provider that we return:
+
+#+name: babashka.bzl.5
+#+BEGIN_SRC python :exports none
+# babashka.bzl
+def _bb_genrule_impl(ctx):
+    ctx.actions.run(
+        inputs = [ctx.file.script] + ctx.files.data,
+        outputs = [ctx.outputs.out],
+        executable = ctx.executable._bb,
+        arguments = [
+            ctx.file.script.path,
+            """{{
+            :out-file "{out_file}"
+            :data [{data}]
+            }}""".format(
+                out_file = ctx.outputs.out.path,
+                data = " ".join(["\"{}\"".format(data.path) for data in ctx.files.data]),
+            ),
+        ],
+    )
+
+bb_genrule = rule(
+    implementation = _bb_genrule_impl,
+    attrs = {
+        "script": attr.label(allow_single_file = [".clj"], mandatory = True),
+        "out": attr.output(mandatory = True),
+        "data": attr.label_list(allow_files = True),
+        "_bb": attr.label(
+            executable = True,
+            allow_single_file = True,
+            cfg = "exec",
+            default = "@babashka//:bb",
+        ),
+    },
+)
+
+def _bb_binary_impl(ctx):
+    executable = ctx.actions.declare_file(ctx.label.name)
+    ctx.actions.write(
+        output = executable,
+        is_executable = True,
+        content = """
+        set -x
+        exec {bb} {src} {arguments} "$@"
+        """.format(
+            bb = ctx.executable._bb.path,
+            src = ctx.file.src.path,
+            arguments = " ".join(ctx.attr.arguments),
+        ),
+    )
+
+    return DefaultInfo(
+        executable = executable,
+        runfiles = ctx.runfiles(files = [ctx.executable._bb, ctx.file.src]),
+    )
+
+bb_binary = rule(
+    implementation = _bb_binary_impl,
+    executable = True,
+    attrs = {
+        "src": attr.label(
+            allow_single_file = [".clj"],
+            mandatory = True,
+        ),
+        "arguments": attr.string_list(),
+        "_bb": attr.label(
+            executable = True,
+            allow_single_file = True,
+            cfg = "exec",
+            default = "@babashka//:bb",
+        ),
+    },
+)
+#+end_src
+
+#+BEGIN_SRC bash :results verbatim :exports results :noweb yes :wrap SRC diff :eval yes
+set -x
+cat | sed -E 's/\s+[#;]\s*\([0-9]+\)\s*$//' >babashka.bzl.4 <<'EOF'
+<<babashka.bzl.4>>
+EOF
+
+cat >babashka.bzl.5 <<'EOF'
+<<babashka.bzl.5>>
+EOF
+
+diff -u babashka.bzl.4 babashka.bzl.5
+rm -f babashka.bzl.4 babashka.bzl.5
+#+END_SRC
+
+#+RESULTS:
+#+begin_SRC diff
+--- babashka.bzl.4
++++ babashka.bzl.5
+@@ -48,6 +48,7 @@
+ 
+     return DefaultInfo(
+         executable = executable,
++        runfiles = ctx.runfiles(files = [ctx.executable._bb, ctx.file.src]),
+     )
+ 
+ bb_binary = rule(
+#+end_SRC
+
+Just because a file is available at build-time doesn't mean it will be available at run-time. To make it available, we add it to the ~runfiles~ attribute of the provider, which expects a specific datastructure that wraps the files to make available.
+
+For this simple form of the ~bb_binary~ rule, the only files needed at runtime are the ~bb~ executable and the script in the ~src~ attribute. If we added a ~data~ attribute similar to what we did for ~bb_genrule~, we'd add those files to the runfiles as well.
+
+With this inconspicious change in place, our rule now works correctly:
+
+#+begin_src 
+$ cat hello.clj  
+(println "hello there!")
+
+$ bazel run //:say_hello
+INFO: Analyzed target //:say_hello (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+Target //:say_hello up-to-date:
+  bazel-bin/say_hello
+INFO: Elapsed time: 2.320s, Critical Path: 0.02s
+INFO: 2 processes: 2 internal.
+INFO: Build completed successfully, 2 total actions
+++ exec external/babashka/bb hello.clj
+hello there!
+#+end_src
+
+* Checking artifacts: ~bb_test~
+
+The last use-case we want to cover is that of writing tests in Clojure and executing them via Bazel. Test rules in Bazel are little more than executable rules that have a special meaning associated with their exit status.[fn:3]
+
+#+name: babashka.bzl.6
+#+BEGIN_SRC python :exports none
+# babashka.bzl
+def _bb_genrule_impl(ctx):
+    ctx.actions.run(
+        inputs = [ctx.file.script] + ctx.files.data,
+        outputs = [ctx.outputs.out],
+        executable = ctx.executable._bb,
+        arguments = [
+            ctx.file.script.path,
+            """{{
+            :out-file "{out_file}"
+            :data [{data}]
+            }}""".format(
+                out_file = ctx.outputs.out.path,
+                data = " ".join(["\"{}\"".format(data.path) for data in ctx.files.data]),
+            ),
+        ],
+    )
+
+bb_genrule = rule(
+    implementation = _bb_genrule_impl,
+    attrs = {
+        "script": attr.label(allow_single_file = [".clj"], mandatory = True),
+        "out": attr.output(mandatory = True),
+        "data": attr.label_list(allow_files = True),
+        "_bb": attr.label(
+            executable = True,
+            allow_single_file = True,
+            cfg = "exec",
+            default = "@babashka//:bb",
+        ),
+    },
+)
+
+def _bb_binary_impl(ctx):
+    executable = ctx.actions.declare_file(ctx.label.name)
+    ctx.actions.write(
+        output = executable,
+        is_executable = True,
+        content = """
+        set -x
+        exec {bb} {src} {arguments} "$@"
+        """.format(
+            bb = ctx.executable._bb.path,
+            src = ctx.file.src.path,
+            arguments = " ".join(ctx.attr.arguments),
+        ),
+    )
+
+    return DefaultInfo(
+        executable = executable,
+        runfiles = ctx.runfiles(files = [ctx.executable._bb, ctx.file.src]),
+    )
+
+EXEC_ATTRS = {
+    "src": attr.label(
+        allow_single_file = [".clj"],
+        mandatory = True,
+    ),
+    "arguments": attr.string_list(),
+    "_bb": attr.label(
+        executable = True,
+        allow_single_file = True,
+        cfg = "exec",
+        default = "@babashka//:bb",
+    ),
+}
+
+bb_binary = rule(
+    implementation = _bb_binary_impl,
+    executable = True,
+    attrs = EXEC_ATTRS,
+)
+
+bb_test = rule(
+    implementation = _bb_binary_impl,
+    test = True,
+    attrs = EXEC_ATTRS,
+)
+#+end_src
+
+#+BEGIN_SRC bash :results verbatim :exports results :noweb yes :wrap SRC diff :eval yes
+set -x
+cat | sed -E 's/\s+[#;]\s*\([0-9]+\)\s*$//' >babashka.bzl.5 <<'EOF'
+<<babashka.bzl.5>>
+EOF
+
+cat >babashka.bzl.6 <<'EOF'
+<<babashka.bzl.6>>
+EOF
+
+diff -u babashka.bzl.5 babashka.bzl.6
+rm -f babashka.bzl.5 babashka.bzl.6
+#+END_SRC
+
+#+RESULTS:
+#+begin_SRC diff
+--- babashka.bzl.5
++++ babashka.bzl.6
+@@ -51,20 +51,28 @@
+         runfiles = ctx.runfiles(files = [ctx.executable._bb, ctx.file.src]),
+     )
+ 
++EXEC_ATTRS = {
++    "src": attr.label(
++        allow_single_file = [".clj"],
++        mandatory = True,
++    ),
++    "arguments": attr.string_list(),
++    "_bb": attr.label(
++        executable = True,
++        allow_single_file = True,
++        cfg = "exec",
++        default = "@babashka//:bb",
++    ),
++}
++
+ bb_binary = rule(
+     implementation = _bb_binary_impl,
+     executable = True,
+-    attrs = {
+-        "src": attr.label(
+-            allow_single_file = [".clj"],
+-            mandatory = True,
+-        ),
+-        "arguments": attr.string_list(),
+-        "_bb": attr.label(
+-            executable = True,
+-            allow_single_file = True,
+-            cfg = "exec",
+-            default = "@babashka//:bb",
+-        ),
+-    },
++    attrs = EXEC_ATTRS,
++)
++
++bb_test = rule(
++    implementation = _bb_binary_impl,
++    test = True,
++    attrs = EXEC_ATTRS,
+ )
+#+end_SRC
+
+Our ~bb_test~ rule is in fact so similar to the ~bb_binary~ rule that we can use the same attributes and implementation function. 
+
+We can use this rule to write a test that all our Clojure files are named in the atavistic-seeming naming convention inherited from its origins on the JVM: that source file paths and names may not contain dashes.
+
+#+name: hello.clj
+#+BEGIN_SRC clojure :exports none :tangle ./20210627-integrating-babashka-into-bazel/check_filenames.clj
+; check_filenames.clj
+(ns check-filenames
+  (:require [clojure.string :as string]))
+
+(let [offending-files
+      (->> *command-line-args*
+           (filter (fn [file] (re-find #"\.clj[cs]?$" file)))  ; (1)
+           (remove (fn [file] (re-find #"^[a-z0-9_/]+\.clj[cs]?$" file))))]  ; (2)
+  (when (not-empty offending-files)
+    (println (format "Files with invalid paths:\n%s"  ; (3)
+               (string/join "\n" offending-files)))
+    (System/exit 1)))   ; (4)
+#+end_src
+
+This script receives the files in the current directory as command line arguments. It first removes all files that aren't Clojure files at ~(1)~ and then checks if any of those remaining have paths that contain any but the allowed characters at ~(2)~.
+
+If any are found, it prints their names to stdout at ~(3)~ before indicating with a non-zero exit status, indicating failure of the test at ~(4)~.
+
+#+name: BUILD.bazel.3
+#+BEGIN_SRC python :exports none
+# BUILD.bazel
+load("//:babashka.bzl", "bb_genrule", "bb_binary", "bb_test")
+
+bb_genrule(
+    name = "babashka_metadata",
+    script = ":get_babashka_metadata.clj",
+    out = "bb-metadata.edn",
+    data = [
+        ":DUMMY",
+    ],
+)
+
+bb_binary(
+    name = "say_hello",
+    src = ":hello.clj",
+)
+
+bb_test(
+    name = "check_filenames",
+    src = ":check_filenames.clj",
+    arguments = glob(["*", ".*"]),  # (1)
+)
+#+end_src
+
+#+BEGIN_SRC bash :results verbatim :exports results :noweb yes :wrap SRC diff :eval yes
+set -x
+cat | sed -E 's/\s+[#;]\s*\([0-9]+\)\s*$//' >BUILD.bazel.2 <<'EOF'
+<<BUILD.bazel.2>>
+EOF
+
+cat >BUILD.bazel.3 <<'EOF'
+<<BUILD.bazel.3>>
+EOF
+
+diff -u BUILD.bazel.2 BUILD.bazel.3
+rm -f BUILD.bazel.2 BUILD.bazel.3
+#+END_SRC
+
+#+RESULTS:
+#+begin_SRC diff
+--- BUILD.bazel.2
++++ BUILD.bazel.3
+@@ -1,5 +1,5 @@
+ # BUILD.bazel
+-load("//:babashka.bzl", "bb_genrule", "bb_binary")
++load("//:babashka.bzl", "bb_genrule", "bb_binary", "bb_test")
+ 
+ bb_genrule(
+     name = "babashka_metadata",
+@@ -13,4 +13,10 @@
+ bb_binary(
+     name = "say_hello",
+     src = ":hello.clj",
++)
++
++bb_test(
++    name = "check_filenames",
++    src = ":check_filenames.clj",
++    arguments = glob(["*", ".*"]),  # (1)
+ )
+#+end_SRC
+
+By using the ~glob~ function (at ~(1)~), we inject all files in the directory as arguments to the test.
+
+If we create a file that violates our criteria for a valid filename and run the test, we can see the test fail, and the report stating which file caused it to:
+
+#+begin_src 
+$ touch foo-bar.clj
+
+$ bazel test --test_output=errors //:check_filenames  
+INFO: Build option --test_sharding_strategy has changed, discarding analysis cache.
+INFO: Analyzed target //:check_filenames (0 packages loaded, 281 targets configured).
+INFO: Found 1 test target...
+FAIL: //:check_filenames (see $LONGPATH/testlogs/check_filenames/test.log)
+INFO: From Testing //:check_filenames:
+==================== Test output for //:check_filenames:
+++ exec external/babashka/bb check_filenames.clj .gitignore BUILD.bazel DUMMY WORKSPACE babashka.bzl check_filenames.clj foo-bar.clj get_babashka_metadata.clj hello.clj
+Files with invalid paths:
+foo-bar.clj
+================================================================================
+Target //:check_filenames up-to-date:
+  bazel-bin/check_filenames
+INFO: Elapsed time: 0.327s, Critical Path: 0.11s
+INFO: 2 processes: 2 linux-sandbox.
+INFO: Build completed, 1 test FAILED, 2 total actions
+//:check_filenames                                                       FAILED in 0.1s
+  $LONGPATH/testlogs/check_filenames/test.log
+
+INFO: Build completed, 1 test FAILED, 2 total actions
+#+end_src
+
+After we delete the offending file, the test succeeds:
+
+#+begin_src 
+$ rm -f foo-bar.clj
+
+$ bazel test --test_output=errors //:check_filenames
+INFO: Analyzed target //:check_filenames (4 packages loaded, 7 targets configured).
+INFO: Found 1 test target...
+Target //:check_filenames up-to-date:
+  bazel-bin/check_filenames
+INFO: Elapsed time: 0.264s, Critical Path: 0.10s
+INFO: 3 processes: 1 internal, 2 linux-sandbox.
+INFO: Build completed successfully, 3 total actions
+//:check_filenames                                                       PASSED in 0.1s
+
+Executed 1 out of 1 test: 1 test passes.
+INFO: Build completed successfully, 3 total actions
+#+end_src
+
+Further steps for this rule might be to also accept a ~data~ attribute as well as implementing a runner script so that users may write tests in the usual ~clojure.test~ style.
+
+* From Cupertino, with Love: ~bb_toolchain~
+
+The last issue that remains is that this set of rules is only usable on Linux machines. It doesn't work on macOS devices, and let's not even mention other operating systems!
+
+To remedy this, we can take advantage of a feature built into Bazel: toolchains.
+
+Toolchains address the problem of providing different versions for some of our tools, depending on what platform we are on.[fn:4]
+
+Defining a new toolchain involves implementing a new rule for that toolchain, creating targets with that rule for each platform we want to support, and then registering those in our ~WORKSPACE~ file.
+
+** Implementing the toolchain rule
+
+#+name: babashka.bzl.7
+#+BEGIN_SRC python :exports none
+# babashka.bzl
+def _bb_toolchain(ctx):
+    return platform_common.ToolchainInfo(
+        bb = ctx.executable.bb,   # (1)
+    )
+
+bb_toolchain = rule(
+    implementation = _bb_toolchain,
+    attrs = {
+        "bb": attr.label(         # (2)
+            executable = True,
+            allow_single_file = True,
+            cfg = "exec",
+        ),
+    },
+)
+
+def _bb_genrule_impl(ctx):
+    ctx.actions.run(
+        inputs = [ctx.file.script] + ctx.files.data,
+        outputs = [ctx.outputs.out],
+        executable = ctx.executable._bb,
+        arguments = [
+            ctx.file.script.path,
+            """{{
+            :out-file "{out_file}"
+            :data [{data}]
+            }}""".format(
+                out_file = ctx.outputs.out.path,
+                data = " ".join(["\"{}\"".format(data.path) for data in ctx.files.data]),
+            ),
+        ],
+    )
+
+bb_genrule = rule(
+    implementation = _bb_genrule_impl,
+    attrs = {
+        "script": attr.label(allow_single_file = [".clj"], mandatory = True),
+        "out": attr.output(mandatory = True),
+        "data": attr.label_list(allow_files = True),
+        "_bb": attr.label(
+            executable = True,
+            allow_single_file = True,
+            cfg = "exec",
+            default = "@babashka//:bb",
+        ),
+    },
+)
+
+def _bb_binary_impl(ctx):
+    executable = ctx.actions.declare_file(ctx.label.name)
+    ctx.actions.write(
+        output = executable,
+        is_executable = True,
+        content = """
+        set -x
+        exec {bb} {src} {arguments} "$@"
+        """.format(
+            bb = ctx.executable._bb.path,
+            src = ctx.file.src.path,
+            arguments = " ".join(ctx.attr.arguments),
+        ),
+    )
+
+    return DefaultInfo(
+        executable = executable,
+        runfiles = ctx.runfiles(files = [ctx.executable._bb, ctx.file.src]),
+    )
+
+EXEC_ATTRS = {
+    "src": attr.label(
+        allow_single_file = [".clj"],
+        mandatory = True,
+    ),
+    "arguments": attr.string_list(),
+    "_bb": attr.label(
+        executable = True,
+        allow_single_file = True,
+        cfg = "exec",
+        default = "@babashka//:bb",
+    ),
+}
+
+bb_binary = rule(
+    implementation = _bb_binary_impl,
+    executable = True,
+    attrs = EXEC_ATTRS,
+)
+
+bb_test = rule(
+    implementation = _bb_binary_impl,
+    test = True,
+    attrs = EXEC_ATTRS,
+)
+#+end_src
+
+#+BEGIN_SRC bash :results verbatim :exports results :noweb yes :wrap SRC diff :eval yes
+set -x
+cat | sed -E 's/\s+[#;]\s*\([0-9]+\)\s*$//' >babashka.bzl.6 <<'EOF'
+<<babashka.bzl.6>>
+EOF
+
+cat >babashka.bzl.7 <<'EOF'
+<<babashka.bzl.7>>
+EOF
+
+diff -u babashka.bzl.6 babashka.bzl.7
+rm -f babashka.bzl.6 babashka.bzl.7
+#+END_SRC
+
+#+RESULTS:
+#+begin_SRC diff
+--- babashka.bzl.6
++++ babashka.bzl.7
+@@ -1,4 +1,20 @@
+ # babashka.bzl
++def _bb_toolchain(ctx):
++    return platform_common.ToolchainInfo(
++        bb = ctx.executable.bb,   # (1)
++    )
++
++bb_toolchain = rule(
++    implementation = _bb_toolchain,
++    attrs = {
++        "bb": attr.label(         # (2)
++            executable = True,
++            allow_single_file = True,
++            cfg = "exec",
++        ),
++    },
++)
++
+ def _bb_genrule_impl(ctx):
+     ctx.actions.run(
+         inputs = [ctx.file.script] + ctx.files.data,
+#+end_SRC
+
+The implementation just returns a ~platform_common.ToolchainInfo~ provider. This provider accepts arbitrary fields, in our case we only have one for the ~bb~ executable.
+
+Our rule interface therefore only has one attribute, and it should look very similar to the ~_bb~ attribute of the rules we implemented already, save for the ~default~ value.
+
+** Installing the toolchain
+
+Before we can install the toolchain, we should make sure the executable will be available for all the platforms that we want to support:
+
+#+HTML: <figure class="fullwidth">
+#+NAME: WORKSPACE.1
+#+BEGIN_SRC python :exports none
+# WORKSPACE
+load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+http_archive(
+    name = "babashka-linux",
+    build_file_content = """exports_files(["bb"])""",
+    url = "https://github.com/babashka/babashka/releases/download/v0.4.6/babashka-0.4.6-linux-amd64-static.tar.gz",
+    sha256 = "aac1be5a441945ebcc6042d2283ac26399895da090437f84123a3124b72fb25a",
+)
+
+http_archive(
+    name = "babashka-macos",
+    build_file_content = """exports_files(["bb"])""",
+    url = "https://github.com/babashka/babashka/releases/download/v0.4.6/babashka-0.4.6-macos-amd64.tar.gz",
+    sha256 = "8fd778592b0f821b69096fbbb9838f7b24c0f9090e68d0296098facab79d7c5a",
+)
+#+END_SRC
+
+#+BEGIN_SRC bash :results verbatim :exports results :noweb yes :wrap SRC diff :eval yes
+set -x
+cat | sed -E 's/\s+[#;]\s*\([0-9]+\)\s*$//' >WORKSPACE.0 <<'EOF'
+<<WORKSPACE.0>>
+EOF
+
+cat >WORKSPACE.1 <<'EOF'
+<<WORKSPACE.1>>
+EOF
+
+diff -u WORKSPACE.0 WORKSPACE.1
+rm -f WORKSPACE.0 WORKSPACE.1
+#+END_SRC
+
+#+RESULTS:
+#+begin_SRC diff
+--- WORKSPACE.0
++++ WORKSPACE.1
+@@ -2,8 +2,15 @@
+ load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+ 
+ http_archive(
+-    name = "babashka",
++    name = "babashka-linux",
+     build_file_content = """exports_files(["bb"])""",
+     url = "https://github.com/babashka/babashka/releases/download/v0.4.6/babashka-0.4.6-linux-amd64-static.tar.gz",
+     sha256 = "aac1be5a441945ebcc6042d2283ac26399895da090437f84123a3124b72fb25a",
++)
++
++http_archive(
++    name = "babashka-macos",
++    build_file_content = """exports_files(["bb"])""",
++    url = "https://github.com/babashka/babashka/releases/download/v0.4.6/babashka-0.4.6-macos-amd64.tar.gz",
++    sha256 = "8fd778592b0f821b69096fbbb9838f7b24c0f9090e68d0296098facab79d7c5a",
+ )
+#+end_SRC
+
+#+HTML: </figure>
+
+Now that we have the required files, we can instantiate the toolchain rule twice:
+
+#+name: BUILD.bazel.4
+#+BEGIN_SRC python :exports none :tangle ./20210627-integrating-babashka-into-bazel/BUILD.bazel
+# BUILD.bazel
+load("//:babashka.bzl", "bb_genrule", "bb_binary", "bb_test", "bb_toolchain")
+
+toolchain_type(name = "babashka_toolchain")  # (1)
+
+bb_toolchain(  # (2)
+    name = "bb_linux",
+    bb = "@babashka-linux//:bb",
+)
+
+toolchain(
+    name = "bb_linux_toolchain",
+    exec_compatible_with = [
+        "@platforms//os:linux",  # (3)
+    ],
+    toolchain = ":bb_linux",
+    toolchain_type = ":babashka_toolchain",  # (4)
+)
+
+bb_toolchain(
+    name = "bb_macos",
+    bb = "@babashka-macos//:bb",
+)
+
+toolchain(
+    name = "bb_macos_toolchain",
+    exec_compatible_with = [
+        "@platforms//os:macos",
+    ],
+    toolchain = ":bb_macos",
+    toolchain_type = ":babashka_toolchain",
+)
+
+bb_genrule(
+    name = "babashka_metadata",
+    script = ":get_babashka_metadata.clj",
+    out = "bb-metadata.edn",
+    data = [
+        ":DUMMY",
+    ],
+)
+
+bb_binary(
+    name = "say_hello",
+    src = ":hello.clj",
+)
+
+bb_test(
+    name = "check_filenames",
+    src = ":check_filenames.clj",
+    arguments = glob(["*", ".*"]),
+)
+#+end_src
+
+#+BEGIN_SRC bash :results verbatim :exports results :noweb yes :wrap SRC diff :eval yes
+set -x
+cat | sed -E 's/\s+[#;]\s*\([0-9]+\)\s*$//' >BUILD.bazel.3 <<'EOF'
+<<BUILD.bazel.3>>
+EOF
+
+cat >BUILD.bazel.4 <<'EOF'
+<<BUILD.bazel.4>>
+EOF
+
+diff -u BUILD.bazel.3 BUILD.bazel.4
+rm -f BUILD.bazel.3 BUILD.bazel.4
+#+END_SRC
+
+#+RESULTS:
+#+begin_SRC diff
+--- BUILD.bazel.3
++++ BUILD.bazel.4
+@@ -1,5 +1,35 @@
+ # BUILD.bazel
+-load("//:babashka.bzl", "bb_genrule", "bb_binary", "bb_test")
++load("//:babashka.bzl", "bb_genrule", "bb_binary", "bb_test", "bb_toolchain")
++
++toolchain_type(name = "babashka_toolchain")  # (1)
++
++bb_toolchain(  # (2)
++    name = "bb_linux",
++    bb = "@babashka-linux//:bb",
++)
++
++toolchain(
++    name = "bb_linux_toolchain",
++    exec_compatible_with = [
++        "@platforms//os:linux",  # (3)
++    ],
++    toolchain = ":bb_linux",
++    toolchain_type = ":babashka_toolchain",  # (4)
++)
++
++bb_toolchain(
++    name = "bb_macos",
++    bb = "@babashka-macos//:bb",
++)
++
++toolchain(
++    name = "bb_macos_toolchain",
++    exec_compatible_with = [
++        "@platforms//os:macos",
++    ],
++    toolchain = ":bb_macos",
++    toolchain_type = ":babashka_toolchain",
++)
+ 
+ bb_genrule(
+     name = "babashka_metadata",
+#+end_SRC
+
+To group the two instances, we define a new toolchain type at ~(1)~.
+
+After instantiating the ~bb_toolchain~ rule, we need to also call the built-in ~toolchain~ rule to indicate compatibility (at ~(3)~) and type (at ~(4)~).
+
+With the toolchains created, we need to register them for use in the ~WORKSPACE~ file:
+
+#+HTML: <figure class="fullwidth">
+#+NAME: WORKSPACE.2
+#+BEGIN_SRC python :exports none :tangle ./20210627-integrating-babashka-into-bazel/WORKSPACE
+# WORKSPACE
+load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+http_archive(
+    name = "babashka-linux",
+    build_file_content = """exports_files(["bb"])""",
+    url = "https://github.com/babashka/babashka/releases/download/v0.4.6/babashka-0.4.6-linux-amd64-static.tar.gz",
+    sha256 = "aac1be5a441945ebcc6042d2283ac26399895da090437f84123a3124b72fb25a",
+)
+
+http_archive(
+    name = "babashka-macos",
+    build_file_content = """exports_files(["bb"])""",
+    url = "https://github.com/babashka/babashka/releases/download/v0.4.6/babashka-0.4.6-macos-amd64.tar.gz",
+    sha256 = "8fd778592b0f821b69096fbbb9838f7b24c0f9090e68d0296098facab79d7c5a",
+)
+
+register_toolchains(
+    "//:bb_linux_toolchain",  # (1)
+    "//:bb_macos_toolchain",
+)
+#+END_SRC
+
+#+BEGIN_SRC bash :results verbatim :exports results :noweb yes :wrap SRC diff :eval yes
+set -x
+cat | sed -E 's/\s+[#;]\s*\([0-9]+\)\s*$//' >WORKSPACE.1 <<'EOF'
+<<WORKSPACE.1>>
+EOF
+
+cat >WORKSPACE.2 <<'EOF'
+<<WORKSPACE.2>>
+EOF
+
+diff -u WORKSPACE.1 WORKSPACE.2
+rm -f WORKSPACE.1 WORKSPACE.2
+#+END_SRC
+
+#+RESULTS:
+#+begin_SRC diff
+--- WORKSPACE.1
++++ WORKSPACE.2
+@@ -14,3 +14,8 @@
+     url = "https://github.com/babashka/babashka/releases/download/v0.4.6/babashka-0.4.6-macos-amd64.tar.gz",
+     sha256 = "8fd778592b0f821b69096fbbb9838f7b24c0f9090e68d0296098facab79d7c5a",
+ )
++
++register_toolchains(
++    "//:bb_linux_toolchain",  # (1)
++    "//:bb_macos_toolchain",
++)
+#+end_SRC
+#+HTML: </figure>
+
+Note that the toolchain name that we specify at ~(1)~ is that of the ~toolchain~ rule, not of the ~bb_toolchain~ rule!
+
+** Using the toolchain
+
+Lastly, we need to change our existing rules to take advantage of the new toolchain:
+
+#+name: babashka.bzl.8
+#+BEGIN_SRC python :exports none :tangle ./20210627-integrating-babashka-into-bazel/babashka.bzl
+# babashka.bzl
+def _bb_toolchain(ctx):
+    return platform_common.ToolchainInfo(
+        bb = ctx.executable.bb,
+    )
+
+bb_toolchain = rule(
+    implementation = _bb_toolchain,
+    attrs = {
+        "bb": attr.label(
+            executable = True,
+            allow_single_file = True,
+            cfg = "exec",
+        ),
+    },
+)
+
+def _bb_genrule_impl(ctx):
+    toolchain = ctx.toolchains["//:babashka_toolchain"]   # (1)
+    ctx.actions.run(
+        inputs = [ctx.file.script] + ctx.files.data,
+        outputs = [ctx.outputs.out],
+        executable = toolchain.bb,                        # (2)
+        arguments = [
+            ctx.file.script.path,
+            """{{
+            :out-file "{out_file}"
+            :data [{data}]
+            }}""".format(
+                out_file = ctx.outputs.out.path,
+                data = " ".join(["\"{}\"".format(data.path) for data in ctx.files.data]),
+            ),
+        ],
+    )
+
+bb_genrule = rule(
+    implementation = _bb_genrule_impl,
+    attrs = {
+        "script": attr.label(allow_single_file = [".clj"], mandatory = True),
+        "out": attr.output(mandatory = True),
+        "data": attr.label_list(allow_files = True),
+    },
+    toolchains = ["//:babashka_toolchain"],               # (3)
+)
+
+def _bb_binary_impl(ctx):
+    toolchain = ctx.toolchains["//:babashka_toolchain"] 
+    executable = ctx.actions.declare_file(ctx.label.name)
+    ctx.actions.write(
+        output = executable,
+        is_executable = True,
+        content = """
+        set -x
+        exec {bb} {src} {arguments} "$@"
+        """.format(
+            bb = toolchain.bb.path,
+            src = ctx.file.src.path,
+            arguments = " ".join(ctx.attr.arguments),
+        ),
+    )
+
+    return DefaultInfo(
+        executable = executable,
+        runfiles = ctx.runfiles(files = [toolchain.bb, ctx.file.src]),
+    )
+
+EXEC_ATTRS = {
+    "src": attr.label(
+        allow_single_file = [".clj"],
+        mandatory = True,
+    ),
+    "arguments": attr.string_list(),
+}
+
+bb_binary = rule(
+    implementation = _bb_binary_impl,
+    executable = True,
+    attrs = EXEC_ATTRS,
+    toolchains = ["//:babashka_toolchain"],
+)
+
+bb_test = rule(
+    implementation = _bb_binary_impl,
+    test = True,
+    attrs = EXEC_ATTRS,
+    toolchains = ["//:babashka_toolchain"],
+)
+#+end_src
+
+#+BEGIN_SRC bash :results verbatim :exports results :noweb yes :wrap SRC diff :eval yes
+set -x
+cat | sed -E 's/\s+[#;]\s*\([0-9]+\)\s*$//' >babashka.bzl.7 <<'EOF'
+<<babashka.bzl.7>>
+EOF
+
+cat >babashka.bzl.8 <<'EOF'
+<<babashka.bzl.8>>
+EOF
+
+diff -u babashka.bzl.7 babashka.bzl.8
+rm -f babashka.bzl.7 babashka.bzl.8
+#+END_SRC
+
+#+RESULTS:
+#+begin_SRC diff
+--- babashka.bzl.7
++++ babashka.bzl.8
+@@ -16,10 +16,11 @@
+ )
+ 
+ def _bb_genrule_impl(ctx):
++    toolchain = ctx.toolchains["//:babashka_toolchain"]   # (1)
+     ctx.actions.run(
+         inputs = [ctx.file.script] + ctx.files.data,
+         outputs = [ctx.outputs.out],
+-        executable = ctx.executable._bb,
++        executable = toolchain.bb,                        # (2)
+         arguments = [
+             ctx.file.script.path,
+             """{{
+@@ -38,16 +39,12 @@
+         "script": attr.label(allow_single_file = [".clj"], mandatory = True),
+         "out": attr.output(mandatory = True),
+         "data": attr.label_list(allow_files = True),
+-        "_bb": attr.label(
+-            executable = True,
+-            allow_single_file = True,
+-            cfg = "exec",
+-            default = "@babashka//:bb",
+-        ),
+     },
++    toolchains = ["//:babashka_toolchain"],               # (3)
+ )
+ 
+ def _bb_binary_impl(ctx):
++    toolchain = ctx.toolchains["//:babashka_toolchain"] 
+     executable = ctx.actions.declare_file(ctx.label.name)
+     ctx.actions.write(
+         output = executable,
+@@ -56,7 +53,7 @@
+         set -x
+         exec {bb} {src} {arguments} "$@"
+         """.format(
+-            bb = ctx.executable._bb.path,
++            bb = toolchain.bb.path,
+             src = ctx.file.src.path,
+             arguments = " ".join(ctx.attr.arguments),
+         ),
+@@ -64,7 +61,7 @@
+ 
+     return DefaultInfo(
+         executable = executable,
+-        runfiles = ctx.runfiles(files = [ctx.executable._bb, ctx.file.src]),
++        runfiles = ctx.runfiles(files = [toolchain.bb, ctx.file.src]),
+     )
+ 
+ EXEC_ATTRS = {
+@@ -73,22 +70,18 @@
+         mandatory = True,
+     ),
+     "arguments": attr.string_list(),
+-    "_bb": attr.label(
+-        executable = True,
+-        allow_single_file = True,
+-        cfg = "exec",
+-        default = "@babashka//:bb",
+-    ),
+ }
+ 
+ bb_binary = rule(
+     implementation = _bb_binary_impl,
+     executable = True,
+     attrs = EXEC_ATTRS,
++    toolchains = ["//:babashka_toolchain"],
+ )
+ 
+ bb_test = rule(
+     implementation = _bb_binary_impl,
+     test = True,
+     attrs = EXEC_ATTRS,
++    toolchains = ["//:babashka_toolchain"],
+ )
+#+end_SRC
+
+This involves adding the toolchain to the rule (at ~(3)~) and then looking it up inside the implementation (at ~(1)~) to replace all references to what was previously the ~_bb~ attribute.
+
+This also means we can remove the ~_bb~ attribute completely.
+
+If we did everything correctly our build should work as previously, but now our comrades on macOS can benefit from the rules as well. I don't have a Mac, so you'll just have to believe me that it works!
+
+#+begin_src 
+$ bazel build //:babashka_metadata
+INFO: Analyzed target //:babashka_metadata (0 packages loaded, 3 targets configured).
+INFO: Found 1 target...
+Target //:babashka_metadata up-to-date:
+  bazel-bin/bb-metadata.edn
+INFO: Elapsed time: 0.127s, Critical Path: 0.00s
+INFO: 1 process: 1 internal.
+INFO: Build completed successfully, 1 total action
+
+$ bazel run //:say_hello
+INFO: Analyzed target //:say_hello (0 packages loaded, 0 targets configured).
+INFO: Found 1 target...
+Target //:say_hello up-to-date:
+  bazel-bin/say_hello
+INFO: Elapsed time: 0.069s, Critical Path: 0.00s
+INFO: 1 process: 1 internal.
+INFO: Build completed successfully, 1 total action
+INFO: Build completed successfully, 1 total action
+++ exec external/babashka-linux/bb hello.clj
+hello there!
+#+end_src
+
+* Epilogue
+
+In this form, this set of rules is already quite useful and can cover a varienty of tasks in a CICD pipeline. Some things could be done to make them even more useful:
+
+- documenting all rule attributes
+- adding tests for rules
+- adding a flag to ~bb_binary~ to run the executable /outside/ the sandbox, on the actual repository directory, as can be done using some [[https://docs.bazel.build/versions/main/user-manual.html#run ][shell variables that are available to executable rules]].[fn:5]
+
+
+[fn:0] If you're completely unfamiliar with Bazel, check out the [[https://docs.bazel.build/versions/4.0.0/guide.html]["Using Bazel"]] and [[https://docs.bazel.build/versions/4.0.0/skylark/concepts.html]["Extending Bazel"]] sections on the tools homepage. This tutorial is no substitute for those basics, rather a demonstration of how to create something novel and actually useful.
+[fn:1] This is achieved by first writing a [[https://github.com/borkdude/sci][Small Clojure Interpreter]] that does not rely on classloading, and then compiling it using [[https://github.com/oracle/graal/blob/master/compiler/README.md][GraalVM.]]
+[fn:2] This rule is named in analogy to [[https://docs.bazel.build/versions/main/be/general.html#genrule][Bazel's built-in ~genrule~]], which runs arbitrary shell commands and produces one or more output files.
+[fn:3] They also run under even stricter sandboxing than executable rules, in an effort to improve test determinism.
+[fn:4] They can also be used in more sophisticated ways to [[https://docs.bazel.build/versions/main/platforms-intro.html][enable cross-compilation]].
+[fn:5] This is not possible for tests however.
+
+# Local Variables:
+# eval: (add-hook 'before-save-hook #'org-make-toc)
+# eval: (add-hook 'before-save-hook #'org-babel-execute-buffer)
+# eval: (add-hook 'after-save-hook #'org-babel-tangle)
+# End:

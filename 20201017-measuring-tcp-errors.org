@@ -69,38 +69,49 @@ To achieve a forth-and-back signal[fn:5], we can use ~tcpbin.com~, which is a si
 
 As for the data being sent, we can read random, megabyte-sized blocks from ~/dev/urandom~ with ~dd~.
 
+#+HTML: <figure class="fullwidth">
 #+BEGIN_SRC bash
 $ dd if=/dev/urandom bs=1M count=16 status=progress | nc tcpbin.com 4242
 #+END_SRC
+#+HTML: </figure>
 
 Invoked like this, we get some transfer speed measurements while sending 16 megabytes.
 
 
 #+HTML: <figure class="fullwidth">
 
-#+BEGIN_SRC bash
-
-$ kill $! # stop listening
-
-$ tshark -r /tmp/tcp.pcap | head # look at some traffic
-    1 0.000000000 192.168.86.165 → 45.79.112.203 TCP 74 57570 → 4242 [SYN] Seq=0 Win=64240 Len=0 MSS=1460 SACK_PERM=1 TSval=501505354 TSecr=0 WS=128
-    2 0.260011384 45.79.112.203 → 192.168.86.165 TCP 74 4242 → 57570 [SYN, ACK] Seq=0 Ack=1 Win=28960 Len=0 MSS=1460 SACK_PERM=1 TSval=174454031 TSecr=501505354 WS=128
-    3 0.260111172 192.168.86.165 → 45.79.112.203 TCP 66 57570 → 4242 [ACK] Seq=1 Ack=1 Win=64256 Len=0 TSval=501505614 TSecr=174454031
-    4 0.260342080 192.168.86.165 → 45.79.112.203 TCP 1514 57570 → 4242 [ACK] Seq=1 Ack=1 Win=64256 Len=1448 TSval=501505614 TSecr=174454031
-    5 0.260374527 192.168.86.165 → 45.79.112.203 TCP 1514 57570 → 4242 [PSH, ACK] Seq=1449 Ack=1 Win=64256 Len=1448 TSval=501505614 TSecr=174454031
-    6 0.260407719 192.168.86.165 → 45.79.112.203 TCP 1514 57570 → 4242 [ACK] Seq=2897 Ack=1 Win=64256 Len=1448 TSval=501505614 TSecr=174454031
-    7 0.260420469 192.168.86.165 → 45.79.112.203 TCP 1514 57570 → 4242 [PSH, ACK] Seq=4345 Ack=1 Win=64256 Len=1448 TSval=501505614 TSecr=174454031
-    8 0.261118130 192.168.86.165 → 45.79.112.203 TCP 1514 57570 → 4242 [ACK] Seq=5793 Ack=1 Win=64256 Len=1448 TSval=501505615 TSecr=174454031
-    9 0.261145239 192.168.86.165 → 45.79.112.203 TCP 1514 57570 → 4242 [PSH, ACK] Seq=7241 Ack=1 Win=64256 Len=1448 TSval=501505615 TSecr=174454031
-   10 0.261173055 192.168.86.165 → 45.79.112.203 TCP 1514 57570 → 4242 [ACK] Seq=8689 Ack=1 Win=64256 Len=1448 TSval=501505615 TSecr=174454031
-
- $ tshark -r /tmp/tcp.pcap | wc -l # count all packets 
- 15837
-
- $ tshark -r /tmp/tcp.pcap -Y "tcp.analysis.out_of_order" | wc -l # count out-of-order packets
- 177
-
+#+BEGIN_SRC clojure :results value table :exports both
+[[ "hello there, beautiful!" 42]
+ [ "foo" "bar" ]]
 #+END_SRC
+
+#+RESULTS:
+| hello there, beautiful! |  42 |
+| foo                     | bar |
+
+
+# #+BEGIN_SRC bash
+# $ kill $! # stop listening
+
+# $ tshark -r /tmp/tcp.pcap | head # look at some traffic
+#     1 0.000000000 192.168.86.165 → 45.79.112.203 TCP 74 57570 → 4242 [SYN] Seq=0 Win=64240 Len=0 MSS=1460 SACK_PERM=1 TSval=501505354 TSecr=0 WS=128
+#     2 0.260011384 45.79.112.203 → 192.168.86.165 TCP 74 4242 → 57570 [SYN, ACK] Seq=0 Ack=1 Win=28960 Len=0 MSS=1460 SACK_PERM=1 TSval=174454031 TSecr=501505354 WS=128
+#     3 0.260111172 192.168.86.165 → 45.79.112.203 TCP 66 57570 → 4242 [ACK] Seq=1 Ack=1 Win=64256 Len=0 TSval=501505614 TSecr=174454031
+#     4 0.260342080 192.168.86.165 → 45.79.112.203 TCP 1514 57570 → 4242 [ACK] Seq=1 Ack=1 Win=64256 Len=1448 TSval=501505614 TSecr=174454031
+#     5 0.260374527 192.168.86.165 → 45.79.112.203 TCP 1514 57570 → 4242 [PSH, ACK] Seq=1449 Ack=1 Win=64256 Len=1448 TSval=501505614 TSecr=174454031
+#     6 0.260407719 192.168.86.165 → 45.79.112.203 TCP 1514 57570 → 4242 [ACK] Seq=2897 Ack=1 Win=64256 Len=1448 TSval=501505614 TSecr=174454031
+#     7 0.260420469 192.168.86.165 → 45.79.112.203 TCP 1514 57570 → 4242 [PSH, ACK] Seq=4345 Ack=1 Win=64256 Len=1448 TSval=501505614 TSecr=174454031
+#     8 0.261118130 192.168.86.165 → 45.79.112.203 TCP 1514 57570 → 4242 [ACK] Seq=5793 Ack=1 Win=64256 Len=1448 TSval=501505615 TSecr=174454031
+#     9 0.261145239 192.168.86.165 → 45.79.112.203 TCP 1514 57570 → 4242 [PSH, ACK] Seq=7241 Ack=1 Win=64256 Len=1448 TSval=501505615 TSecr=174454031
+#    10 0.261173055 192.168.86.165 → 45.79.112.203 TCP 1514 57570 → 4242 [ACK] Seq=8689 Ack=1 Win=64256 Len=1448 TSval=501505615 TSecr=174454031
+
+#  $ tshark -r /tmp/tcp.pcap | wc -l # count all packets 
+#  15837
+
+#  $ tshark -r /tmp/tcp.pcap -Y "tcp.analysis.out_of_order" | wc -l # count out-of-order packets
+#  177
+
+# #+END_SRC
 
 #+HTML: </figure>
 

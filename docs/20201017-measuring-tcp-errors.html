@@ -88,16 +88,16 @@ code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } /* Warni
 <p class="byline">2020-10-17 &ndash; Tim Jäger</p>
 </header>
 <section>
-<p>Is it possible to build a video-chat application where conversational latency is roughly equivalent to signal latency<span><label for="sn-0" class="margin-toggle sidenote-number"></label><input type="checkbox" id="sn-0" class="margin-toggle"/><span class="sidenote">As given by the speed of light in copper wire/optic fiber/free space/pudding.<br />
+<p>Is it possible to build a video-chat application where conversational latency is roughly equivalent to signal latency<span><label for="sn-1" class="margin-toggle sidenote-number"></label><input type="checkbox" id="sn-1" class="margin-toggle"/><span class="sidenote">As given by the speed of light in copper wire/optic fiber/free space/pudding.<br />
 <br />
-</span></span>?<span><label for="sn-1" class="margin-toggle sidenote-number"></label><input type="checkbox" id="sn-1" class="margin-toggle"/><span class="sidenote">Answers on a postcard please.<br />
+</span></span>?<span><label for="sn-2" class="margin-toggle sidenote-number"></label><input type="checkbox" id="sn-2" class="margin-toggle"/><span class="sidenote">Answers on a postcard please.<br />
 <br />
 </span></span></p>
 <p>Perhaps.</p>
 <p>Building it on top of TCP might not.</p>
 </section>
 <section id="contents" class="level1" data-toc=":include all :ignore (this)">
-<h1 data-toc=":include all :ignore (this)">Contents</h1>
+<h1>Contents</h1>
 <div class="CONTENTS drawer">
 <ul>
 <li><a href="#background--motivation">Background &amp; motivation</a>
@@ -120,7 +120,7 @@ code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } /* Warni
 <h1>Background &amp; motivation</h1>
 <section id="protocol-basics" class="level2">
 <h2>Protocol basics</h2>
-<p>The internet is a series of tubes. All these tubes form a network. Some networks guarantee delivery and the preservation of message ordering<span><label for="sn-2" class="margin-toggle sidenote-number"></label><input type="checkbox" id="sn-2" class="margin-toggle"/><span class="sidenote">Such as the CAN bus in your car.<br />
+<p>The internet is a series of tubes. All these tubes form a network. Some networks guarantee delivery and the preservation of message ordering<span><label for="sn-3" class="margin-toggle sidenote-number"></label><input type="checkbox" id="sn-3" class="margin-toggle"/><span class="sidenote">Such as the CAN bus in your car.<br />
 <br />
 </span></span>, however this one does not.</p>
 <p>That's why smart people came up with the <em>Transmission Control Protocol</em> in the primordial age.</p>
@@ -138,46 +138,41 @@ code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } /* Warni
 <section id="methodology" class="level1">
 <h1>Methodology</h1>
 <p>Since the entire point of TCP is to not have to deal with this in issue in practice, we'll have to get clever. Actually we won't, since somebody else already did, immediately before creating Wireshark.</p>
-<p>Were it not for this, we would have had to implement our own TCP stack in userspace, or run the loss detection algorithm over UDP<span><label for="sn-3" class="margin-toggle sidenote-number"></label><input type="checkbox" id="sn-3" class="margin-toggle"/><span class="sidenote">Scientifically known as "counting".<br />
+<p>Were it not for this, we would have had to implement our own TCP stack in userspace, or run the loss detection algorithm over UDP<span><label for="sn-4" class="margin-toggle sidenote-number"></label><input type="checkbox" id="sn-4" class="margin-toggle"/><span class="sidenote">Scientifically known as "counting".<br />
 <br />
 </span></span>.</p>
 <p>Using Wireshark, we can simply capture the TCP traffic from our network card and then have it search for out-of-order delivery.</p>
 <section id="capture-setup" class="level2">
 <h2>Capture setup</h2>
 <p>Wireshark can be run from the terminal, which makes it easier to compose workflows.</p>
-<div class="sourceCode" id="cb1"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true"></a>$ <span class="ex">tshark</span> -f <span class="st">&quot;port 4242&quot;</span> -w /tmp/tcp.pcap <span class="kw">&amp;</span> </span></code></pre></div>
+<div class="sourceCode" id="cb1"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1"></a>$ <span class="ex">tshark</span> -f <span class="st">&quot;port 4242&quot;</span> -w /tmp/tcp.pcap <span class="kw">&amp;</span> </span></code></pre></div>
 <p>Invoked like this, it captures any traffic over port 4242, in any protocol, writes it to the file <code>/tmp/tcp.pcap</code>, all while running in the background.</p>
 </section>
 <section id="traffic-generation" class="level2">
 <h2>Traffic generation</h2>
-<p>To achieve a forth-and-back signal<span><label for="sn-4" class="margin-toggle sidenote-number"></label><input type="checkbox" id="sn-4" class="margin-toggle"/><span class="sidenote">We mostly care about the back.<br />
+<p>To achieve a forth-and-back signal<span><label for="sn-5" class="margin-toggle sidenote-number"></label><input type="checkbox" id="sn-5" class="margin-toggle"/><span class="sidenote">We mostly care about the back.<br />
 <br />
 </span></span>, we can use <code>tcpbin.com</code>, which is a simple echo server accessible on the public internet. Any traffic sent over port 4242 via TCP will be sent back verbatim.</p>
 <p>As for the data being sent, we can read random, megabyte-sized blocks from <code>/dev/urandom</code> with <code>dd</code>.</p>
-<div class="sourceCode" id="cb2"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true"></a>$ <span class="fu">dd</span> if=/dev/urandom bs=1M count=16 status=progress <span class="kw">|</span> <span class="ex">nc</span> tcpbin.com 4242</span></code></pre></div>
+<figure class="fullwidth">
+<div class="sourceCode" id="cb2"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1"></a>$ <span class="fu">dd</span> if=/dev/urandom bs=1M count=16 status=progress <span class="kw">|</span> <span class="ex">nc</span> tcpbin.com 4242</span></code></pre></div>
+</figure>
 <p>Invoked like this, we get some transfer speed measurements while sending 16 megabytes.</p>
 <figure class="fullwidth">
-<div class="sourceCode" id="cb3"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true"></a></span>
-<span id="cb3-2"><a href="#cb3-2" aria-hidden="true"></a>$ <span class="bu">kill</span> <span class="va">$!</span> <span class="co"># stop listening</span></span>
-<span id="cb3-3"><a href="#cb3-3" aria-hidden="true"></a></span>
-<span id="cb3-4"><a href="#cb3-4" aria-hidden="true"></a>$ <span class="ex">tshark</span> -r /tmp/tcp.pcap <span class="kw">|</span> <span class="fu">head</span> <span class="co"># look at some traffic</span></span>
-<span id="cb3-5"><a href="#cb3-5" aria-hidden="true"></a>    <span class="ex">1</span> 0.000000000 192.168.86.165 → 45.79.112.203 TCP 74 57570 → 4242 [SYN] Seq=0 Win=64240 Len=0 MSS=1460 SACK_PERM=1 TSval=501505354 TSecr=0 WS=128</span>
-<span id="cb3-6"><a href="#cb3-6" aria-hidden="true"></a>    <span class="ex">2</span> 0.260011384 45.79.112.203 → 192.168.86.165 TCP 74 4242 → 57570 [SYN, ACK] Seq=0 Ack=1 Win=28960 Len=0 MSS=1460 SACK_PERM=1 TSval=174454031 TSecr=501505354 WS=128</span>
-<span id="cb3-7"><a href="#cb3-7" aria-hidden="true"></a>    <span class="ex">3</span> 0.260111172 192.168.86.165 → 45.79.112.203 TCP 66 57570 → 4242 [ACK] Seq=1 Ack=1 Win=64256 Len=0 TSval=501505614 TSecr=174454031</span>
-<span id="cb3-8"><a href="#cb3-8" aria-hidden="true"></a>    <span class="ex">4</span> 0.260342080 192.168.86.165 → 45.79.112.203 TCP 1514 57570 → 4242 [ACK] Seq=1 Ack=1 Win=64256 Len=1448 TSval=501505614 TSecr=174454031</span>
-<span id="cb3-9"><a href="#cb3-9" aria-hidden="true"></a>    <span class="ex">5</span> 0.260374527 192.168.86.165 → 45.79.112.203 TCP 1514 57570 → 4242 [PSH, ACK] Seq=1449 Ack=1 Win=64256 Len=1448 TSval=501505614 TSecr=174454031</span>
-<span id="cb3-10"><a href="#cb3-10" aria-hidden="true"></a>    <span class="ex">6</span> 0.260407719 192.168.86.165 → 45.79.112.203 TCP 1514 57570 → 4242 [ACK] Seq=2897 Ack=1 Win=64256 Len=1448 TSval=501505614 TSecr=174454031</span>
-<span id="cb3-11"><a href="#cb3-11" aria-hidden="true"></a>    <span class="ex">7</span> 0.260420469 192.168.86.165 → 45.79.112.203 TCP 1514 57570 → 4242 [PSH, ACK] Seq=4345 Ack=1 Win=64256 Len=1448 TSval=501505614 TSecr=174454031</span>
-<span id="cb3-12"><a href="#cb3-12" aria-hidden="true"></a>    <span class="ex">8</span> 0.261118130 192.168.86.165 → 45.79.112.203 TCP 1514 57570 → 4242 [ACK] Seq=5793 Ack=1 Win=64256 Len=1448 TSval=501505615 TSecr=174454031</span>
-<span id="cb3-13"><a href="#cb3-13" aria-hidden="true"></a>    <span class="ex">9</span> 0.261145239 192.168.86.165 → 45.79.112.203 TCP 1514 57570 → 4242 [PSH, ACK] Seq=7241 Ack=1 Win=64256 Len=1448 TSval=501505615 TSecr=174454031</span>
-<span id="cb3-14"><a href="#cb3-14" aria-hidden="true"></a>   <span class="ex">10</span> 0.261173055 192.168.86.165 → 45.79.112.203 TCP 1514 57570 → 4242 [ACK] Seq=8689 Ack=1 Win=64256 Len=1448 TSval=501505615 TSecr=174454031</span>
-<span id="cb3-15"><a href="#cb3-15" aria-hidden="true"></a></span>
-<span id="cb3-16"><a href="#cb3-16" aria-hidden="true"></a> $ <span class="ex">tshark</span> -r /tmp/tcp.pcap <span class="kw">|</span> <span class="fu">wc</span> -l <span class="co"># count all packets </span></span>
-<span id="cb3-17"><a href="#cb3-17" aria-hidden="true"></a> <span class="ex">15837</span></span>
-<span id="cb3-18"><a href="#cb3-18" aria-hidden="true"></a></span>
-<span id="cb3-19"><a href="#cb3-19" aria-hidden="true"></a> $ <span class="ex">tshark</span> -r /tmp/tcp.pcap -Y <span class="st">&quot;tcp.analysis.out_of_order&quot;</span> <span class="kw">|</span> <span class="fu">wc</span> -l <span class="co"># count out-of-order packets</span></span>
-<span id="cb3-20"><a href="#cb3-20" aria-hidden="true"></a> <span class="ex">177</span></span>
-<span id="cb3-21"><a href="#cb3-21" aria-hidden="true"></a></span></code></pre></div>
+<div class="sourceCode" id="cb3" data-results="value table" data-exports="both"><pre class="sourceCode clojure"><code class="sourceCode clojure"><span id="cb3-1"><a href="#cb3-1"></a>[[ <span class="st">&quot;hello there, beautiful!&quot;</span> <span class="dv">42</span>]</span>
+<span id="cb3-2"><a href="#cb3-2"></a> [ <span class="st">&quot;foo&quot;</span> <span class="st">&quot;bar&quot;</span> ]]</span></code></pre></div>
+<table>
+<tbody>
+<tr class="odd">
+<td>hello there, beautiful!</td>
+<td>42</td>
+</tr>
+<tr class="even">
+<td>foo</td>
+<td>bar</td>
+</tr>
+</tbody>
+</table>
 </figure>
 </section>
 </section>

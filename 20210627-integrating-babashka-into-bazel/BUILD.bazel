@@ -1,0 +1,52 @@
+# BUILD.bazel
+load("//:babashka.bzl", "bb_genrule", "bb_binary", "bb_test", "bb_toolchain")
+
+toolchain_type(name = "babashka_toolchain")  # (1)
+
+bb_toolchain(  # (2)
+    name = "bb_linux",
+    bb = "@babashka-linux//:bb",
+)
+
+toolchain(
+    name = "bb_linux_toolchain",
+    exec_compatible_with = [
+        "@platforms//os:linux",  # (3)
+    ],
+    toolchain = ":bb_linux",
+    toolchain_type = ":babashka_toolchain",  # (4)
+)
+
+bb_toolchain(
+    name = "bb_macos",
+    bb = "@babashka-macos//:bb",
+)
+
+toolchain(
+    name = "bb_macos_toolchain",
+    exec_compatible_with = [
+        "@platforms//os:macos",
+    ],
+    toolchain = ":bb_macos",
+    toolchain_type = ":babashka_toolchain",
+)
+
+bb_genrule(
+    name = "babashka_metadata",
+    script = ":get_babashka_metadata.clj",
+    out = "bb-metadata.edn",
+    data = [
+        ":DUMMY",
+    ],
+)
+
+bb_binary(
+    name = "say_hello",
+    src = ":hello.clj",
+)
+
+bb_test(
+    name = "check_filenames",
+    src = ":check_filenames.clj",
+    arguments = glob(["*", ".*"]),
+)

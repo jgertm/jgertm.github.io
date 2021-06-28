@@ -1,0 +1,880 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="generator" content="pandoc">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+  <meta name="author" content="Tim Jäger">
+  <meta name="dcterms.date" content="2021-06-27">
+  <title>Integrating Babashka into Bazel</title>
+  <style type="text/css">code{white-space: pre;}</style>
+  <style type="text/css">
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+  { counter-reset: source-line 0; }
+pre.numberSource code > span
+  { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+  { content: counter(source-line);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+    color: #aaaaaa;
+  }
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa;  padding-left: 4px; }
+div.sourceCode
+  {   }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } /* Alert */
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } /* Annotation */
+code span.at { color: #7d9029; } /* Attribute */
+code span.bn { color: #40a070; } /* BaseN */
+code span.bu { } /* BuiltIn */
+code span.cf { color: #007020; font-weight: bold; } /* ControlFlow */
+code span.ch { color: #4070a0; } /* Char */
+code span.cn { color: #880000; } /* Constant */
+code span.co { color: #60a0b0; font-style: italic; } /* Comment */
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } /* CommentVar */
+code span.do { color: #ba2121; font-style: italic; } /* Documentation */
+code span.dt { color: #902000; } /* DataType */
+code span.dv { color: #40a070; } /* DecVal */
+code span.er { color: #ff0000; font-weight: bold; } /* Error */
+code span.ex { } /* Extension */
+code span.fl { color: #40a070; } /* Float */
+code span.fu { color: #06287e; } /* Function */
+code span.im { } /* Import */
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } /* Information */
+code span.kw { color: #007020; font-weight: bold; } /* Keyword */
+code span.op { color: #666666; } /* Operator */
+code span.ot { color: #007020; } /* Other */
+code span.pp { color: #bc7a00; } /* Preprocessor */
+code span.sc { color: #4070a0; } /* SpecialChar */
+code span.ss { color: #bb6688; } /* SpecialString */
+code span.st { color: #4070a0; } /* String */
+code span.va { color: #19177c; } /* Variable */
+code span.vs { color: #4070a0; } /* VerbatimString */
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } /* Warning */
+  </style>
+  <link rel="stylesheet" href="tufte.css">
+  <link rel="stylesheet" href="pandoc.css">
+  <link rel="stylesheet" href="pandoc-solarized.css">
+  <link rel="stylesheet" href="tufte-extra.css">
+  <!--[if lt IE 9]>
+    <script src="//cdnjs.cloudflare.com/ajax/libs/html5shiv/3.7.3/html5shiv-printshiv.min.js"></script>
+  <![endif]-->
+</head>
+<body>
+<article>
+<header>
+<h1 class="title">Integrating Babashka into Bazel</h1>
+<p class="subtitle">How to get fast Clojure actions in the best-worst build tool</p>
+<p class="byline">2021-06-27 &ndash; Tim Jäger</p>
+</header>
+<figure class="fullwidth">
+<p><img src="./mountains.jpg" alt="Mountain face in the Italian Dolomites, 2016" /></p>
+</figure>
+<section>
+<p><a href="https://bazel.build">Bazel</a> is the open-source version of Google's internal build tool. It's terrible in many ways, but it can do amazing things if used correctly. <span><label for="sn-1" class="margin-toggle sidenote-number"></label><input type="checkbox" id="sn-1" class="margin-toggle"/><span class="sidenote">If you're completely unfamiliar with Bazel, check out the <a href="https://docs.bazel.build/versions/4.0.0/guide.html">"Using Bazel"</a> and <a href="https://docs.bazel.build/versions/4.0.0/skylark/concepts.html">"Extending Bazel"</a> sections on the tools homepage. This tutorial is no substitute for those basics, rather a demonstration of how to create something novel and actually useful.<br />
+<br />
+</span></span></p>
+<p><a href="https://babashka.html/">Babashka</a> is a Clojure executable with a bunch of built-in libraries. It improves upon Clojure by having near-instantaneous process start-up.<span><label for="sn-2" class="margin-toggle sidenote-number"></label><input type="checkbox" id="sn-2" class="margin-toggle"/><span class="sidenote">This is achieved by first writing a <a href="https://github.com/borkdude/sci">Small Clojure Interpreter</a> that does not rely on classloading, and then compiling it using <a href="https://github.com/oracle/graal/blob/master/compiler/README.md">GraalVM.</a><br />
+<br />
+</span></span></p>
+<p>In this tutorial, we'll learn how to wrap Babashka so that we can use it from Bazel to build files, execute actions and write tests with the logic for these operations written in Clojure.</p>
+<p>These Bazel rules are based on a very similar set of rules I recently implemented <a href="https://splashfinancial.com/">at work</a>. If any of this seems interesting to you, <a href="https://jobs.lever.co/splashfinancial?lever-via=V3yi7qNnp4">we're hiring</a>!</p>
+<p>The final version of the code produced herein can be found <a href="https://github.com/jgertm/jgertm.github.io/tree/main/20210627-integrating-babashka-into-bazel">here</a>.</p>
+</section>
+<section id="contents" class="level1">
+<h1>Contents</h1>
+<ul>
+<li><a href="#basic-setup">Basic setup</a></li>
+<li><a href="#producing-files-bb_genrule">Producing files: <code>bb_genrule</code></a>
+<ul>
+<li><a href="#basic-rule-skeleton">Basic rule skeleton</a></li>
+<li><a href="#invoking-the-rule">Invoking the rule</a></li>
+<li><a href="#actually-doing-the-work">Actually doing the work</a></li>
+<li><a href="#including-more-dependencies">Including more dependencies</a></li>
+</ul></li>
+<li><a href="#performing-side-effects-bb_binary">Performing side-effects: <code>bb_binary</code></a></li>
+<li><a href="#checking-artifacts-bb_test">Checking artifacts: <code>bb_test</code></a></li>
+<li><a href="#greetings-to-cupertino-bb_toolchain">Greetings to Cupertino: <code>bb_toolchain</code></a></li>
+<li><a href="#bonus-round">Bonus round</a></li>
+</ul>
+</section>
+<section id="basic-setup" class="level1">
+<h1>Basic setup</h1>
+<p>We begin with an empty directory, perhaps with version control initialized.</p>
+<p>To start, we need to tell Bazel how to find the babashka executable (called <code>bb</code>). This is accomplished by adding an entry in the <code>WORKSPACE</code> file at the root of our, ehh, workspace. This is where all external dependencies of our build system are specified, such as third-party toolchains and downloadable files.</p>
+<figure class="fullwidth">
+<div class="sourceCode" id="WORKSPACE.0"><pre class="sourceCode python"><code class="sourceCode python"><span id="WORKSPACE.0-1"><a href="#WORKSPACE.0-1"></a><span class="co"># WORKSPACE</span></span>
+<span id="WORKSPACE.0-2"><a href="#WORKSPACE.0-2"></a>load(<span class="st">&quot;@bazel_tools//tools/build_defs/repo:http.bzl&quot;</span>, <span class="st">&quot;http_archive&quot;</span>)                                                 <span class="co"># (1)</span></span>
+<span id="WORKSPACE.0-3"><a href="#WORKSPACE.0-3"></a></span>
+<span id="WORKSPACE.0-4"><a href="#WORKSPACE.0-4"></a>http_archive(</span>
+<span id="WORKSPACE.0-5"><a href="#WORKSPACE.0-5"></a>    name <span class="op">=</span> <span class="st">&quot;babashka&quot;</span>,</span>
+<span id="WORKSPACE.0-6"><a href="#WORKSPACE.0-6"></a>    build_file_content <span class="op">=</span> <span class="st">&quot;&quot;&quot;exports_files([&quot;bb&quot;])&quot;&quot;&quot;</span>,                                                                <span class="co"># (2)</span></span>
+<span id="WORKSPACE.0-7"><a href="#WORKSPACE.0-7"></a>    url <span class="op">=</span> <span class="st">&quot;https://github.com/babashka/babashka/releases/download/v0.4.6/babashka-0.4.6-linux-amd64-static.tar.gz&quot;</span>,  <span class="co"># (3)</span></span>
+<span id="WORKSPACE.0-8"><a href="#WORKSPACE.0-8"></a>    sha256 <span class="op">=</span> <span class="st">&quot;aac1be5a441945ebcc6042d2283ac26399895da090437f84123a3124b72fb25a&quot;</span>,</span>
+<span id="WORKSPACE.0-9"><a href="#WORKSPACE.0-9"></a>)</span></code></pre></div>
+</figure>
+<p>At <code>(1)</code>, we import the <code>http_archive</code> workspace rule that allows us to fetch arbitrary archives from the internet and make them available.</p>
+<p>Since most software projects don't use Bazel, we can provide a <code>BUILD.bazel</code> file using the optional <code>build_file_content</code> parameter to <code>http_archive</code> at <code>(2)</code>. In this case, since the archive contains only the compiled <code>bb</code> executable, we can use the built-in <code>exports_files</code> function to make it visible. The three leading and trailing double quotes make this a literal string, allowing us to use individual quotes for the filename (<code>"bb"</code>).</p>
+<p>We specify the URL from the "Releases" tab on the project's Github page at <code>(3)</code>, along with an optional checksum. Astute readers may have noticed that this release only works for Linux users, and they would be correct. We will address this later.</p>
+<p>This file should now be available in the workspace. We can verify this by querying all files defined within the <code>@babashka</code> repository:</p>
+<pre><code>$ bazel query &quot;@babashka//...:*&quot;
+...
+@babashka//:bb                     # (1)
+@babashka//:BUILD.bazel
+</code></pre>
+<p>Line <code>(1)</code> is the Bazel target that we'll use to refer to the executable from the rules that we will be implementing next.</p>
+</section>
+<section id="producing-files-bb_genrule" class="level1">
+<h1>Producing files: <code>bb_genrule</code></h1>
+<p>Re-usable build abstractions are defined as rules in Bazel. These must be written in files that end in <code>.bzl</code> and are split between interface and implementation.</p>
+<p>The primary function of a build system is to produce files by running commands on other files. We will encapsulate this basic operation for the specific case of commands written in Clojure in a rule called <code>bb_genrule</code><span><label for="sn-3" class="margin-toggle sidenote-number"></label><input type="checkbox" id="sn-3" class="margin-toggle"/><span class="sidenote">This rule is named in analogy to <a href="https://docs.bazel.build/versions/main/be/general.html#genrule">Bazel's built-in <code>genrule</code></a>, which runs arbitrary shell commands and produces one or more output files.<br />
+<br />
+</span></span> .</p>
+<section id="basic-rule-skeleton" class="level2">
+<h2>Basic rule skeleton</h2>
+<figure class="fullwidth">
+<div class="sourceCode" id="babashka.bzl.0"><pre class="sourceCode python"><code class="sourceCode python"><span id="babashka.bzl.0-1"><a href="#babashka.bzl.0-1"></a><span class="co"># babashka.bzl</span></span>
+<span id="babashka.bzl.0-2"><a href="#babashka.bzl.0-2"></a><span class="kw">def</span> _bb_genrule_impl(ctx):</span>
+<span id="babashka.bzl.0-3"><a href="#babashka.bzl.0-3"></a>    <span class="cf">pass</span>                                                                        <span class="co"># (1)</span></span>
+<span id="babashka.bzl.0-4"><a href="#babashka.bzl.0-4"></a></span>
+<span id="babashka.bzl.0-5"><a href="#babashka.bzl.0-5"></a>bb_genrule <span class="op">=</span> rule(</span>
+<span id="babashka.bzl.0-6"><a href="#babashka.bzl.0-6"></a>    implementation <span class="op">=</span> _bb_genrule_impl,</span>
+<span id="babashka.bzl.0-7"><a href="#babashka.bzl.0-7"></a>    attrs <span class="op">=</span> {</span>
+<span id="babashka.bzl.0-8"><a href="#babashka.bzl.0-8"></a>        <span class="st">&quot;script&quot;</span>: attr.label(allow_single_file <span class="op">=</span> [<span class="st">&quot;.clj&quot;</span>], mandatory <span class="op">=</span> <span class="va">True</span>),   <span class="co"># (2)</span></span>
+<span id="babashka.bzl.0-9"><a href="#babashka.bzl.0-9"></a>        <span class="st">&quot;out&quot;</span>: attr.output(mandatory <span class="op">=</span> <span class="va">True</span>),                                   <span class="co"># (3)</span></span>
+<span id="babashka.bzl.0-10"><a href="#babashka.bzl.0-10"></a>        <span class="st">&quot;_bb&quot;</span>: attr.label(                                                      <span class="co"># (4)</span></span>
+<span id="babashka.bzl.0-11"><a href="#babashka.bzl.0-11"></a>            executable <span class="op">=</span> <span class="va">True</span>,</span>
+<span id="babashka.bzl.0-12"><a href="#babashka.bzl.0-12"></a>            allow_single_file <span class="op">=</span> <span class="va">True</span>,</span>
+<span id="babashka.bzl.0-13"><a href="#babashka.bzl.0-13"></a>            cfg <span class="op">=</span> <span class="st">&quot;exec&quot;</span>,</span>
+<span id="babashka.bzl.0-14"><a href="#babashka.bzl.0-14"></a>            default <span class="op">=</span> <span class="st">&quot;@babashka//:bb&quot;</span>,</span>
+<span id="babashka.bzl.0-15"><a href="#babashka.bzl.0-15"></a>        ),</span>
+<span id="babashka.bzl.0-16"><a href="#babashka.bzl.0-16"></a>    },</span>
+<span id="babashka.bzl.0-17"><a href="#babashka.bzl.0-17"></a>)</span></code></pre></div>
+</figure>
+<p>This is the basic body of any Bazel rule. We have an implementation function that we leave empty for now at <code>(1)</code>.</p>
+<p>The <code>rule</code> function defines the actual rule and refers to the implementation function. It also specifies the interface that we will use to invoke the rule later on in the <code>attrs</code> parameter.</p>
+<p>We specify a <code>script</code> parameter which will be the Clojure file that we want Babashka to execute at <code>(2)</code>.</p>
+<p>We also specify what we want the output file to be called at <code>(3)</code>. Lastly, we specify an implicit parameter that won't be specified at the usage site to inject the <code>bb</code> executable that we provisioned earlier at <code>(4)</code>.</p>
+<p>Further choices and options for attributes can be found in the <a href="https://docs.bazel.build/versions/main/skylark/lib/attr.html">Bazel docs</a>.</p>
+</section>
+<section id="invoking-the-rule" class="level2">
+<h2>Invoking the rule</h2>
+<p>As an example, we will use <code>bb_genrule</code> to define a target <code>babashka_metadata</code> that produces a file <code>bb-metadata.edn</code> that contains information about the version of Babashka that we provisioned.</p>
+<div class="sourceCode" id="BUILD.bazel.0"><pre class="sourceCode python"><code class="sourceCode python"><span id="BUILD.bazel.0-1"><a href="#BUILD.bazel.0-1"></a><span class="co"># BUILD.bazel</span></span>
+<span id="BUILD.bazel.0-2"><a href="#BUILD.bazel.0-2"></a>load(<span class="st">&quot;//:babashka.bzl&quot;</span>, <span class="st">&quot;bb_genrule&quot;</span>)        <span class="co"># (1)</span></span>
+<span id="BUILD.bazel.0-3"><a href="#BUILD.bazel.0-3"></a></span>
+<span id="BUILD.bazel.0-4"><a href="#BUILD.bazel.0-4"></a>bb_genrule(</span>
+<span id="BUILD.bazel.0-5"><a href="#BUILD.bazel.0-5"></a>    name <span class="op">=</span> <span class="st">&quot;babashka_metadata&quot;</span>,</span>
+<span id="BUILD.bazel.0-6"><a href="#BUILD.bazel.0-6"></a>    script <span class="op">=</span> <span class="st">&quot;:get_babashka_metadata.clj&quot;</span>,   <span class="co"># (2)</span></span>
+<span id="BUILD.bazel.0-7"><a href="#BUILD.bazel.0-7"></a>    out <span class="op">=</span> <span class="st">&quot;bb-metadata.edn&quot;</span>,</span>
+<span id="BUILD.bazel.0-8"><a href="#BUILD.bazel.0-8"></a>)</span></code></pre></div>
+<p>Rule invocation occurs in files named <code>BUILD.bazel</code>. To be able to use the rule we just defined, we need to import it at <code>(1)</code>. We invoke the rule with a script from the same directory that we will create promptly at <code>(2)</code>.</p>
+<p>We also write this script that just prints the babashka version to the terminal. This won't work yet, but it'll allow us to get one step closer to a working rule:</p>
+<div class="sourceCode" id="get_babashka_metadata.clj.0"><pre class="sourceCode clojure"><code class="sourceCode clojure"><span id="get_babashka_metadata.clj.0-1"><a href="#get_babashka_metadata.clj.0-1"></a><span class="co">;; get_babashka_metadata.clj</span></span>
+<span id="get_babashka_metadata.clj.0-2"><a href="#get_babashka_metadata.clj.0-2"></a>(<span class="kw">ns</span> get-babashka-metadata</span>
+<span id="get_babashka_metadata.clj.0-3"><a href="#get_babashka_metadata.clj.0-3"></a>  (<span class="at">:require</span></span>
+<span id="get_babashka_metadata.clj.0-4"><a href="#get_babashka_metadata.clj.0-4"></a>   [clojure.pprint <span class="at">:refer</span> [pprint]]))</span>
+<span id="get_babashka_metadata.clj.0-5"><a href="#get_babashka_metadata.clj.0-5"></a></span>
+<span id="get_babashka_metadata.clj.0-6"><a href="#get_babashka_metadata.clj.0-6"></a>(<span class="kw">let</span> [metadata {<span class="at">:version</span> (System/getProperty <span class="st">&quot;babashka.version&quot;</span>)}]</span>
+<span id="get_babashka_metadata.clj.0-7"><a href="#get_babashka_metadata.clj.0-7"></a>  (pprint metadata))</span></code></pre></div>
+<p>With all the necessary pieces in place, we can give it a try:</p>
+<figure class="fullwidth">
+<pre><code>$ bazel query //...
+...
+//:babashka_metadata
+Loading: 1 packages loaded
+
+$ bazel build //babashka_metadata
+ERROR: $WORKSPACE/BUILD.bazel:4:11: in bb_genrule rule //:babashka_metadata:
+The following files have no generating action:
+bb-metadata.edn                                                                                                            # (1)
+ERROR: Analysis of target &#39;//:babashka_metadata&#39; failed; build aborted: Analysis of target &#39;//:babashka_metadata&#39; failed
+INFO: Elapsed time: 0.143s
+INFO: 0 processes.
+FAILED: Build did NOT complete successfully (2 packages loaded, 2 targets configured)
+</code></pre>
+</figure>
+<p>Bazel recognized the targets, but errors when prompted to build it. This is because it can tell from the implementation of the rule that the file <code>bb-metadata.edn</code> is not being produced yet at <code>(1)</code>. Let's fix that!</p>
+</section>
+<section id="actually-doing-the-work" class="level2">
+<h2>Actually doing the work</h2>
+<div class="sourceCode" id="cb3"><pre class="sourceCode diff"><code class="sourceCode diff"><span id="cb3-1"><a href="#cb3-1"></a><span class="kw">--- babashka.bzl.0</span></span>
+<span id="cb3-2"><a href="#cb3-2"></a><span class="dt">+++ babashka.bzl.1</span></span>
+<span id="cb3-3"><a href="#cb3-3"></a><span class="dt">@@ -1,6 +1,13 @@</span></span>
+<span id="cb3-4"><a href="#cb3-4"></a> # babashka.bzl</span>
+<span id="cb3-5"><a href="#cb3-5"></a> def _bb_genrule_impl(ctx):</span>
+<span id="cb3-6"><a href="#cb3-6"></a><span class="st">-    pass</span></span>
+<span id="cb3-7"><a href="#cb3-7"></a><span class="va">+    ctx.actions.run(                       # (1)</span></span>
+<span id="cb3-8"><a href="#cb3-8"></a><span class="va">+        inputs = [ctx.file.script],        # (2)</span></span>
+<span id="cb3-9"><a href="#cb3-9"></a><span class="va">+        outputs = [ctx.outputs.out],       # (3)</span></span>
+<span id="cb3-10"><a href="#cb3-10"></a><span class="va">+        executable = ctx.executable._bb,   # (4)</span></span>
+<span id="cb3-11"><a href="#cb3-11"></a><span class="va">+        arguments = [</span></span>
+<span id="cb3-12"><a href="#cb3-12"></a><span class="va">+            ctx.file.script.path,          # (5)</span></span>
+<span id="cb3-13"><a href="#cb3-13"></a><span class="va">+        ],</span></span>
+<span id="cb3-14"><a href="#cb3-14"></a><span class="va">+    )</span></span>
+<span id="cb3-15"><a href="#cb3-15"></a></span>
+<span id="cb3-16"><a href="#cb3-16"></a> bb_genrule = rule(</span>
+<span id="cb3-17"><a href="#cb3-17"></a>     implementation = _bb_genrule_impl,</span></code></pre></div>
+<p>By calling the <code>run</code> action at <code>(1)</code>, we tell Bazel to call a program with the arguments that we specify.</p>
+<p>In our case, the program we want to call can be found under the <code>ctx.file._bb</code> field (at <code>(4)</code>) because of how we specified the <code>_bb</code> attribute in the rule interface.</p>
+<p>The only argument we pass, for now, is the path to the script at <code>(5)</code>, since that will cause Babashka to execute the file.</p>
+<p>We also need to specify the input files (at <code>(2)</code>) and expected output files (at <code>(3)</code>) of this execution, otherwise they won't be available within the sandbox that Bazel uses to isolate commands.</p>
+<p>Now that Bazel knows what to do, we can try again:</p>
+<figure class="fullwidth">
+<pre><code>$ bazel build //:babashka_metadata
+INFO: Analyzed target //:babashka_metadata (0 packages loaded, 0 targets configured).
+INFO: Found 1 target...
+INFO: From Action bb-metadata.edn:
+{:version &quot;0.4.6&quot;}                                                                                        # (1)
+ERROR: $WORKSPACE/BUILD.bazel:4:11: output &#39;bb-metadata.edn&#39; was not created                              # (2)
+ERROR: $WORKSPACE/BUILD.bazel:4:11: Action bb-metadata.edn failed: not all outputs were created or valid
+Target //:babashka_metadata failed to build
+Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: 0.082s, Critical Path: 0.05s
+INFO: 2 processes: 1 internal, 1 linux-sandbox.
+FAILED: Build did NOT complete successfully
+</code></pre>
+</figure>
+<p>Still broken, but as we see at <code>(1)</code>, our script is being run and producing output, in accordance with the call to <code>clojure.pprint/pprint</code>.</p>
+<p>The issue is that we are not writing the EDN to the output file. To do that, we need to pass the path of the output file to the script:</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode diff"><code class="sourceCode diff"><span id="cb5-1"><a href="#cb5-1"></a><span class="kw">--- get_babashka_metadata.clj.0</span></span>
+<span id="cb5-2"><a href="#cb5-2"></a><span class="dt">+++ get_babashka_metadata.clj.1</span></span>
+<span id="cb5-3"><a href="#cb5-3"></a><span class="dt">@@ -1,7 +1,10 @@</span></span>
+<span id="cb5-4"><a href="#cb5-4"></a> ;; get_babashka_metadata.clj</span>
+<span id="cb5-5"><a href="#cb5-5"></a> (ns get-babashka-metadata</span>
+<span id="cb5-6"><a href="#cb5-6"></a><span class="st">-  (:require</span></span>
+<span id="cb5-7"><a href="#cb5-7"></a><span class="st">-   [clojure.pprint :refer [pprint]]))</span></span>
+<span id="cb5-8"><a href="#cb5-8"></a><span class="va">+  (:require [clojure.edn :as edn]</span></span>
+<span id="cb5-9"><a href="#cb5-9"></a><span class="va">+            [clojure.java.io :as io]</span></span>
+<span id="cb5-10"><a href="#cb5-10"></a><span class="va">+            [clojure.pprint :refer [pprint]]))</span></span>
+<span id="cb5-11"><a href="#cb5-11"></a></span>
+<span id="cb5-12"><a href="#cb5-12"></a><span class="st">-(let [metadata {:version (System/getProperty &quot;babashka.version&quot;)}]</span></span>
+<span id="cb5-13"><a href="#cb5-13"></a><span class="st">-  (pprint metadata))</span></span>
+<span id="cb5-14"><a href="#cb5-14"></a><span class="va">+(let [{:keys [out-file]} (edn/read-string (first *command-line-args*))   ; (1)</span></span>
+<span id="cb5-15"><a href="#cb5-15"></a><span class="va">+      metadata {:version (System/getProperty &quot;babashka.version&quot;)}]</span></span>
+<span id="cb5-16"><a href="#cb5-16"></a><span class="va">+  (pprint metadata)</span></span>
+<span id="cb5-17"><a href="#cb5-17"></a><span class="va">+  (spit (io/file out-file) metadata))                                    ; (2)</span></span></code></pre></div>
+<p>At <code>(1)</code>, we modified our script to parse the first command line argument as EDN and then bind the <code>out-file</code> key.</p>
+<p>At <code>(2)</code> we then write the map to that path.</p>
+<p>To supply that first argument, we need to slightly change the way <code>bb</code> is called:</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode diff"><code class="sourceCode diff"><span id="cb6-1"><a href="#cb6-1"></a><span class="kw">--- babashka.bzl.1</span></span>
+<span id="cb6-2"><a href="#cb6-2"></a><span class="dt">+++ babashka.bzl.2</span></span>
+<span id="cb6-3"><a href="#cb6-3"></a><span class="dt">@@ -6,6 +6,11 @@</span></span>
+<span id="cb6-4"><a href="#cb6-4"></a>         executable = ctx.executable._bb,</span>
+<span id="cb6-5"><a href="#cb6-5"></a>         arguments = [</span>
+<span id="cb6-6"><a href="#cb6-6"></a>             ctx.file.script.path,</span>
+<span id="cb6-7"><a href="#cb6-7"></a><span class="va">+            &quot;&quot;&quot;{{</span></span>
+<span id="cb6-8"><a href="#cb6-8"></a><span class="va">+            :out-file &quot;{out_file}&quot;</span></span>
+<span id="cb6-9"><a href="#cb6-9"></a><span class="va">+            }}&quot;&quot;&quot;.format(</span></span>
+<span id="cb6-10"><a href="#cb6-10"></a><span class="va">+                out_file = ctx.outputs.out.path,</span></span>
+<span id="cb6-11"><a href="#cb6-11"></a><span class="va">+            ),</span></span>
+<span id="cb6-12"><a href="#cb6-12"></a>         ],</span>
+<span id="cb6-13"><a href="#cb6-13"></a>     )</span>
+<span id="cb6-14"><a href="#cb6-14"></a></span></code></pre></div>
+<p>This is how we create a Clojure map (<code>{:some-key "its value"}</code>) in Starlark and pass it as a command line argument: the triple-quotes are necessary since we want to wrap the file path in a single pair of quotes. The doule braces turn into single braces, whereas <code>{out-file}</code> gets replaced with the substitution that we specify in the call to format.</p>
+<p>Keep in mind that, despite this being the <em>second</em> argument to <code>bb</code>, it's the <em>first</em> argument that the script will see.</p>
+<p>Now, building the target succeeds:</p>
+<figure class="fullwidth">
+<pre><code>$ bazel build //:babashka_metadata
+INFO: Analyzed target //:babashka_metadata (2 packages loaded, 3 targets configured).
+INFO: Found 1 target...
+INFO: From Action bb-metadata.edn:
+{:version &quot;0.4.6&quot;}
+Target //:babashka_metadata up-to-date:
+  bazel-bin/bb-metadata.edn          # (1)
+INFO: Elapsed time: 0.148s, Critical Path: 0.04s
+INFO: 2 processes: 1 internal, 1 linux-sandbox.
+INFO: Build completed successfully, 2 total actions
+
+$ cat -n bazel-bin/bb-metadata.edn   # (2)
+     1  {:version &quot;0.4.6&quot;}
+</code></pre>
+</figure>
+<p>Bazel helpfully prints the path, <em>relative to the workspace root,</em> where the output file can be found at <code>(1)</code>.</p>
+<p>As we see at <code>(2)</code>, the output is consistent with the version that we downloaded in the <code>WORKSPACE</code> file.</p>
+</section>
+<section id="including-more-dependencies" class="level2">
+<h2>Including more dependencies</h2>
+<p>It's not unusual to have have additional files as dependencies to a build step. To support this in our rule, we have to add an attribute:</p>
+<figure class="fullwidth">
+<div class="sourceCode" id="cb8"><pre class="sourceCode diff"><code class="sourceCode diff"><span id="cb8-1"><a href="#cb8-1"></a><span class="kw">--- babashka.bzl.2</span></span>
+<span id="cb8-2"><a href="#cb8-2"></a><span class="dt">+++ babashka.bzl.3</span></span>
+<span id="cb8-3"><a href="#cb8-3"></a><span class="dt">@@ -1,15 +1,17 @@</span></span>
+<span id="cb8-4"><a href="#cb8-4"></a> # babashka.bzl</span>
+<span id="cb8-5"><a href="#cb8-5"></a> def _bb_genrule_impl(ctx):</span>
+<span id="cb8-6"><a href="#cb8-6"></a>     ctx.actions.run(</span>
+<span id="cb8-7"><a href="#cb8-7"></a><span class="st">-        inputs = [ctx.file.script],</span></span>
+<span id="cb8-8"><a href="#cb8-8"></a><span class="va">+        inputs = [ctx.file.script] + ctx.files.data,</span></span>
+<span id="cb8-9"><a href="#cb8-9"></a>         outputs = [ctx.outputs.out],</span>
+<span id="cb8-10"><a href="#cb8-10"></a>         executable = ctx.executable._bb,</span>
+<span id="cb8-11"><a href="#cb8-11"></a>         arguments = [</span>
+<span id="cb8-12"><a href="#cb8-12"></a>             ctx.file.script.path,</span>
+<span id="cb8-13"><a href="#cb8-13"></a>             &quot;&quot;&quot;{{</span>
+<span id="cb8-14"><a href="#cb8-14"></a>             :out-file &quot;{out_file}&quot;</span>
+<span id="cb8-15"><a href="#cb8-15"></a><span class="va">+            :data [{data}]</span></span>
+<span id="cb8-16"><a href="#cb8-16"></a>             }}&quot;&quot;&quot;.format(</span>
+<span id="cb8-17"><a href="#cb8-17"></a>                 out_file = ctx.outputs.out.path,</span>
+<span id="cb8-18"><a href="#cb8-18"></a><span class="va">+                data = &quot; &quot;.join([&quot;\&quot;{}\&quot;&quot;.format(data.path) for data in ctx.files.data]),</span></span>
+<span id="cb8-19"><a href="#cb8-19"></a>             ),</span>
+<span id="cb8-20"><a href="#cb8-20"></a>         ],</span>
+<span id="cb8-21"><a href="#cb8-21"></a>     )</span>
+<span id="cb8-22"><a href="#cb8-22"></a><span class="dt">@@ -19,6 +21,7 @@</span></span>
+<span id="cb8-23"><a href="#cb8-23"></a>     attrs = {</span>
+<span id="cb8-24"><a href="#cb8-24"></a>         &quot;script&quot;: attr.label(allow_single_file = [&quot;.clj&quot;], mandatory = True),</span>
+<span id="cb8-25"><a href="#cb8-25"></a>         &quot;out&quot;: attr.output(mandatory = True),</span>
+<span id="cb8-26"><a href="#cb8-26"></a><span class="va">+        &quot;data&quot;: attr.label_list(allow_files = True),</span></span>
+<span id="cb8-27"><a href="#cb8-27"></a>         &quot;_bb&quot;: attr.label(</span>
+<span id="cb8-28"><a href="#cb8-28"></a>             executable = True,</span>
+<span id="cb8-29"><a href="#cb8-29"></a>             allow_single_file = True,</span></code></pre></div>
+</figure>
+<p>We add the <code>data</code> attribute as a list of targets and files and include it in the EDN map that is the first argument as the <code>:data</code> key, formatted as a Clojure vector. It's important to add the files to the <code>run</code> action inputs, otherwise there will be no files visible to the script at the paths under the <code>:data</code> key!</p>
+<p>To test this attribute, we can create a dummy file and add it to the <code>data</code> argument of <code>babashka_metadata</code> and modify the script to read the data argument and include the contents of the files in its output:</p>
+<div class="sourceCode" id="cb9"><pre class="sourceCode diff"><code class="sourceCode diff"><span id="cb9-1"><a href="#cb9-1"></a><span class="kw">--- BUILD.bazel.0</span></span>
+<span id="cb9-2"><a href="#cb9-2"></a><span class="dt">+++ BUILD.bazel.1</span></span>
+<span id="cb9-3"><a href="#cb9-3"></a><span class="dt">@@ -5,4 +5,7 @@</span></span>
+<span id="cb9-4"><a href="#cb9-4"></a>     name = &quot;babashka_metadata&quot;,</span>
+<span id="cb9-5"><a href="#cb9-5"></a>     script = &quot;:get_babashka_metadata.clj&quot;,</span>
+<span id="cb9-6"><a href="#cb9-6"></a>     out = &quot;bb-metadata.edn&quot;,</span>
+<span id="cb9-7"><a href="#cb9-7"></a><span class="va">+    data = [</span></span>
+<span id="cb9-8"><a href="#cb9-8"></a><span class="va">+        &quot;:DUMMY&quot;,</span></span>
+<span id="cb9-9"><a href="#cb9-9"></a><span class="va">+    ],</span></span>
+<span id="cb9-10"><a href="#cb9-10"></a> )</span></code></pre></div>
+<div class="sourceCode" id="cb10"><pre class="sourceCode diff"><code class="sourceCode diff"><span id="cb10-1"><a href="#cb10-1"></a><span class="kw">--- get_babashka_metadata.clj.1</span></span>
+<span id="cb10-2"><a href="#cb10-2"></a><span class="dt">+++ get_babashka_metadata.clj.2</span></span>
+<span id="cb10-3"><a href="#cb10-3"></a><span class="dt">@@ -4,7 +4,8 @@</span></span>
+<span id="cb10-4"><a href="#cb10-4"></a>             [clojure.java.io :as io]</span>
+<span id="cb10-5"><a href="#cb10-5"></a>             [clojure.pprint :refer [pprint]]))</span>
+<span id="cb10-6"><a href="#cb10-6"></a></span>
+<span id="cb10-7"><a href="#cb10-7"></a><span class="st">-(let [{:keys [out-file]} (edn/read-string (first *command-line-args*))</span></span>
+<span id="cb10-8"><a href="#cb10-8"></a><span class="st">-      metadata {:version (System/getProperty &quot;babashka.version&quot;)}]</span></span>
+<span id="cb10-9"><a href="#cb10-9"></a><span class="va">+(let [{:keys [data out-file]} (edn/read-string (first *command-line-args*))</span></span>
+<span id="cb10-10"><a href="#cb10-10"></a><span class="va">+      metadata {:version (System/getProperty &quot;babashka.version&quot;)</span></span>
+<span id="cb10-11"><a href="#cb10-11"></a><span class="va">+                :data (mapv slurp data)}]</span></span>
+<span id="cb10-12"><a href="#cb10-12"></a>   (pprint metadata)</span>
+<span id="cb10-13"><a href="#cb10-13"></a>   (spit (io/file out-file) metadata))</span></code></pre></div>
+<p>If we re-run the build now, we can see the updated output:</p>
+<figure class="fullwidth">
+<pre><code>$ cat --show-all DUMMY
+THIS IS THE CONTENT OF THE DUMMY FILE$
+
+$ bazel build //:babashka_metadata
+INFO: Analyzed target //:babashka_metadata (0 packages loaded, 0 targets configured).
+INFO: Found 1 target...
+Target //:babashka_metadata up-to-date:
+  bazel-bin/bb-metadata.edn
+INFO: Elapsed time: 0.066s, Critical Path: 0.00s
+INFO: 1 process: 1 internal.
+INFO: Build completed successfully, 1 total action
+
+$ cat bazel-bin/bb-metadata.edn
+{:version &quot;0.4.6&quot;, :data [&quot;THIS IS THE CONTENT OF THE DUMMY FILE\n&quot;]}%
+</code></pre>
+</figure>
+</section>
+</section>
+<section id="performing-side-effects-bb_binary" class="level1">
+<h1>Performing side-effects: <code>bb_binary</code></h1>
+<p>Next, we want to be able to integrate tasks that occur during deployment into Bazel, and we want to write the logic for those in Clojure as well.</p>
+<p>Examples of such tasks could be uploading an artifact to a remote or sending a notification on Slack after a successful deployment.</p>
+<p>To support this, we will add another rule:</p>
+<div class="sourceCode" id="cb12"><pre class="sourceCode diff"><code class="sourceCode diff"><span id="cb12-1"><a href="#cb12-1"></a><span class="kw">--- babashka.bzl.3</span></span>
+<span id="cb12-2"><a href="#cb12-2"></a><span class="dt">+++ babashka.bzl.4</span></span>
+<span id="cb12-3"><a href="#cb12-3"></a><span class="dt">@@ -30,3 +30,40 @@</span></span>
+<span id="cb12-4"><a href="#cb12-4"></a>         ),</span>
+<span id="cb12-5"><a href="#cb12-5"></a>     },</span>
+<span id="cb12-6"><a href="#cb12-6"></a> )</span>
+<span id="cb12-7"><a href="#cb12-7"></a><span class="va">+</span></span>
+<span id="cb12-8"><a href="#cb12-8"></a><span class="va">+def _bb_binary_impl(ctx):</span></span>
+<span id="cb12-9"><a href="#cb12-9"></a><span class="va">+    executable = ctx.actions.declare_file(ctx.label.name)                    # (1)</span></span>
+<span id="cb12-10"><a href="#cb12-10"></a><span class="va">+    ctx.actions.write(                                                       # (2)</span></span>
+<span id="cb12-11"><a href="#cb12-11"></a><span class="va">+        output = executable,</span></span>
+<span id="cb12-12"><a href="#cb12-12"></a><span class="va">+        is_executable = True,</span></span>
+<span id="cb12-13"><a href="#cb12-13"></a><span class="va">+        content = &quot;&quot;&quot;</span></span>
+<span id="cb12-14"><a href="#cb12-14"></a><span class="va">+        set -x</span></span>
+<span id="cb12-15"><a href="#cb12-15"></a><span class="va">+        exec {bb} {src} {arguments} &quot;$@&quot;                                     # (3)</span></span>
+<span id="cb12-16"><a href="#cb12-16"></a><span class="va">+        &quot;&quot;&quot;.format(</span></span>
+<span id="cb12-17"><a href="#cb12-17"></a><span class="va">+            bb = ctx.executable._bb.path,</span></span>
+<span id="cb12-18"><a href="#cb12-18"></a><span class="va">+            src = ctx.file.src.path,</span></span>
+<span id="cb12-19"><a href="#cb12-19"></a><span class="va">+            arguments = &quot; &quot;.join(ctx.attr.arguments),</span></span>
+<span id="cb12-20"><a href="#cb12-20"></a><span class="va">+        ),</span></span>
+<span id="cb12-21"><a href="#cb12-21"></a><span class="va">+    )</span></span>
+<span id="cb12-22"><a href="#cb12-22"></a><span class="va">+</span></span>
+<span id="cb12-23"><a href="#cb12-23"></a><span class="va">+    return DefaultInfo(</span></span>
+<span id="cb12-24"><a href="#cb12-24"></a><span class="va">+        executable = executable,                                             # (4)</span></span>
+<span id="cb12-25"><a href="#cb12-25"></a><span class="va">+    )</span></span>
+<span id="cb12-26"><a href="#cb12-26"></a><span class="va">+</span></span>
+<span id="cb12-27"><a href="#cb12-27"></a><span class="va">+bb_binary = rule(</span></span>
+<span id="cb12-28"><a href="#cb12-28"></a><span class="va">+    implementation = _bb_binary_impl,</span></span>
+<span id="cb12-29"><a href="#cb12-29"></a><span class="va">+    executable = True,                                                       # (5)</span></span>
+<span id="cb12-30"><a href="#cb12-30"></a><span class="va">+    attrs = {</span></span>
+<span id="cb12-31"><a href="#cb12-31"></a><span class="va">+        &quot;src&quot;: attr.label(</span></span>
+<span id="cb12-32"><a href="#cb12-32"></a><span class="va">+            allow_single_file = [&quot;.clj&quot;],</span></span>
+<span id="cb12-33"><a href="#cb12-33"></a><span class="va">+            mandatory = True,</span></span>
+<span id="cb12-34"><a href="#cb12-34"></a><span class="va">+        ),</span></span>
+<span id="cb12-35"><a href="#cb12-35"></a><span class="va">+        &quot;arguments&quot;: attr.string_list(),</span></span>
+<span id="cb12-36"><a href="#cb12-36"></a><span class="va">+        &quot;_bb&quot;: attr.label(</span></span>
+<span id="cb12-37"><a href="#cb12-37"></a><span class="va">+            executable = True,</span></span>
+<span id="cb12-38"><a href="#cb12-38"></a><span class="va">+            allow_single_file = True,</span></span>
+<span id="cb12-39"><a href="#cb12-39"></a><span class="va">+            cfg = &quot;exec&quot;,</span></span>
+<span id="cb12-40"><a href="#cb12-40"></a><span class="va">+            default = &quot;@babashka//:bb&quot;,</span></span>
+<span id="cb12-41"><a href="#cb12-41"></a><span class="va">+        ),</span></span>
+<span id="cb12-42"><a href="#cb12-42"></a><span class="va">+    },</span></span>
+<span id="cb12-43"><a href="#cb12-43"></a><span class="va">+)</span></span></code></pre></div>
+<p>The basic structure of this rule should look familiar now, however, there are some differences worth calling out:</p>
+<p>We want targets created by this rule to be executable via <code>bazel run</code>. This mean we are creating an executable rule, as seen at <code>(5)</code>.</p>
+<p>Before we can run an executable target, it needs to be built. This is what we are actually doing in the implementation function, by declaring a file at <code>(1)</code> and then creating that file by writing to it at <code>(2)</code>. This file will simply contain shell commands, the operative one being <code>exec</code> (at <code>(3)</code>) to start the actual command. Note that the command won't run at this stage of the build, it is simply being written to a file in the build sandbox.</p>
+<p>It is expected for an executable rule to return a <a href="https://docs.bazel.build/versions/main/skylark/lib/DefaultInfo.html"><code>DefaultInfo</code></a> <a href="https://docs.bazel.build/versions/main/skylark/rules.html#providers">provider</a> with the <code>executable</code> field set to the file that will be executed, as seen at <code>(4)</code>.</p>
+<p>Take note of the trailing <code>"$@"</code>, this enables injection of trailing arguments from the Bazel invocation (e.g. <code>bazel run //:binary_target -- foo bar</code>).</p>
+<p>To inspect the result of the expansion, we can define a target and build it:</p>
+<div class="sourceCode" id="cb13"><pre class="sourceCode diff"><code class="sourceCode diff"><span id="cb13-1"><a href="#cb13-1"></a><span class="kw">--- BUILD.bazel.1</span></span>
+<span id="cb13-2"><a href="#cb13-2"></a><span class="dt">+++ BUILD.bazel.2</span></span>
+<span id="cb13-3"><a href="#cb13-3"></a><span class="dt">@@ -1,5 +1,5 @@</span></span>
+<span id="cb13-4"><a href="#cb13-4"></a> # BUILD.bazel</span>
+<span id="cb13-5"><a href="#cb13-5"></a><span class="st">-load(&quot;//:babashka.bzl&quot;, &quot;bb_genrule&quot;)</span></span>
+<span id="cb13-6"><a href="#cb13-6"></a><span class="va">+load(&quot;//:babashka.bzl&quot;, &quot;bb_genrule&quot;, &quot;bb_binary&quot;)</span></span>
+<span id="cb13-7"><a href="#cb13-7"></a></span>
+<span id="cb13-8"><a href="#cb13-8"></a> bb_genrule(</span>
+<span id="cb13-9"><a href="#cb13-9"></a>     name = &quot;babashka_metadata&quot;,</span>
+<span id="cb13-10"><a href="#cb13-10"></a><span class="dt">@@ -8,4 +8,9 @@</span></span>
+<span id="cb13-11"><a href="#cb13-11"></a>     data = [</span>
+<span id="cb13-12"><a href="#cb13-12"></a>         &quot;:DUMMY&quot;,</span>
+<span id="cb13-13"><a href="#cb13-13"></a>     ],</span>
+<span id="cb13-14"><a href="#cb13-14"></a><span class="va">+)</span></span>
+<span id="cb13-15"><a href="#cb13-15"></a><span class="va">+</span></span>
+<span id="cb13-16"><a href="#cb13-16"></a><span class="va">+bb_binary(</span></span>
+<span id="cb13-17"><a href="#cb13-17"></a><span class="va">+    name = &quot;say_hello&quot;,</span></span>
+<span id="cb13-18"><a href="#cb13-18"></a><span class="va">+    src = &quot;:hello.clj&quot;,</span></span>
+<span id="cb13-19"><a href="#cb13-19"></a> )</span></code></pre></div>
+<pre><code>$ bazel build //:say_hello
+INFO: Analyzed target //:say_hello (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+Target //:say_hello up-to-date:
+  bazel-bin/say_hello
+INFO: Elapsed time: 2.320s, Critical Path: 0.02s
+INFO: 2 processes: 2 internal.
+INFO: Build completed successfully, 2 total actions
+
+$ cat bazel-bin/say_hello
+        set -x
+        exec external/babashka/bb hello.clj  &quot;$@&quot;
+        %
+</code></pre>
+<p>However, when we try to run it, there is an issue:</p>
+<figure class="fullwidth">
+<pre><code>$ bazel run //:say_hello  
+INFO: Analyzed target //:say_hello (2 packages loaded, 3 targets configured).
+INFO: Found 1 target...
+Target //:say_hello up-to-date:
+  bazel-bin/say_hello
+INFO: Elapsed time: 0.151s, Critical Path: 0.01s
+INFO: 3 processes: 3 internal.
+INFO: Build completed successfully, 3 total actions
+INFO: Build completed successfully, 3 total actions
+++ exec external/babashka/bb hello.clj
+$LONGPATH/say_hello: line 3: $LONGPATH/say_hello.runfiles/__main__/external/babashka/bb: No such file or directory
+</code></pre>
+</figure>
+<p>As we see on the last line, some files can't be found. To fix this, we need to add the <code>runfiles</code> attribute to the <code>DefaultInfo</code> provider that we return:</p>
+<div class="sourceCode" id="cb16"><pre class="sourceCode diff"><code class="sourceCode diff"><span id="cb16-1"><a href="#cb16-1"></a><span class="kw">--- babashka.bzl.4</span></span>
+<span id="cb16-2"><a href="#cb16-2"></a><span class="dt">+++ babashka.bzl.5</span></span>
+<span id="cb16-3"><a href="#cb16-3"></a><span class="dt">@@ -48,6 +48,7 @@</span></span>
+<span id="cb16-4"><a href="#cb16-4"></a></span>
+<span id="cb16-5"><a href="#cb16-5"></a>     return DefaultInfo(</span>
+<span id="cb16-6"><a href="#cb16-6"></a>         executable = executable,</span>
+<span id="cb16-7"><a href="#cb16-7"></a><span class="va">+        runfiles = ctx.runfiles(files = [ctx.executable._bb, ctx.file.src]),</span></span>
+<span id="cb16-8"><a href="#cb16-8"></a>     )</span>
+<span id="cb16-9"><a href="#cb16-9"></a></span>
+<span id="cb16-10"><a href="#cb16-10"></a> bb_binary = rule(</span></code></pre></div>
+<p>Just because a file is available at build-time doesn't mean it will be available at run-time. To make it available, we add it to the <code>runfiles</code> attribute of the provider, which expects a specific datastructure that wraps the files to make available.</p>
+<p>For this simple form of the <code>bb_binary</code> rule, the only files needed at runtime are the <code>bb</code> executable and the script in the <code>src</code> attribute. If we added a <code>data</code> attribute similar to what we did for <code>bb_genrule</code>, we'd add those files to the runfiles as well.</p>
+<p>With this inconspicious change in place, our rule now works correctly:</p>
+<pre><code>$ cat hello.clj  
+(println &quot;hello there!&quot;)
+
+$ bazel run //:say_hello
+INFO: Analyzed target //:say_hello (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+Target //:say_hello up-to-date:
+  bazel-bin/say_hello
+INFO: Elapsed time: 2.320s, Critical Path: 0.02s
+INFO: 2 processes: 2 internal.
+INFO: Build completed successfully, 2 total actions
+++ exec external/babashka/bb hello.clj
+hello there!
+</code></pre>
+</section>
+<section id="checking-artifacts-bb_test" class="level1">
+<h1>Checking artifacts: <code>bb_test</code></h1>
+<p>The last use-case we want to cover is that of writing tests in Clojure and executing them via Bazel. Test rules in Bazel are little more than executable rules that have a special meaning associated with their exit status.<span><label for="sn-4" class="margin-toggle sidenote-number"></label><input type="checkbox" id="sn-4" class="margin-toggle"/><span class="sidenote">They also run under even stricter sandboxing than executable rules, in an effort to improve test determinism.<br />
+<br />
+</span></span></p>
+<div class="sourceCode" id="cb18"><pre class="sourceCode diff"><code class="sourceCode diff"><span id="cb18-1"><a href="#cb18-1"></a><span class="kw">--- babashka.bzl.5</span></span>
+<span id="cb18-2"><a href="#cb18-2"></a><span class="dt">+++ babashka.bzl.6</span></span>
+<span id="cb18-3"><a href="#cb18-3"></a><span class="dt">@@ -51,20 +51,28 @@</span></span>
+<span id="cb18-4"><a href="#cb18-4"></a>         runfiles = ctx.runfiles(files = [ctx.executable._bb, ctx.file.src]),</span>
+<span id="cb18-5"><a href="#cb18-5"></a>     )</span>
+<span id="cb18-6"><a href="#cb18-6"></a></span>
+<span id="cb18-7"><a href="#cb18-7"></a><span class="va">+EXEC_ATTRS = {</span></span>
+<span id="cb18-8"><a href="#cb18-8"></a><span class="va">+    &quot;src&quot;: attr.label(</span></span>
+<span id="cb18-9"><a href="#cb18-9"></a><span class="va">+        allow_single_file = [&quot;.clj&quot;],</span></span>
+<span id="cb18-10"><a href="#cb18-10"></a><span class="va">+        mandatory = True,</span></span>
+<span id="cb18-11"><a href="#cb18-11"></a><span class="va">+    ),</span></span>
+<span id="cb18-12"><a href="#cb18-12"></a><span class="va">+    &quot;arguments&quot;: attr.string_list(),</span></span>
+<span id="cb18-13"><a href="#cb18-13"></a><span class="va">+    &quot;_bb&quot;: attr.label(</span></span>
+<span id="cb18-14"><a href="#cb18-14"></a><span class="va">+        executable = True,</span></span>
+<span id="cb18-15"><a href="#cb18-15"></a><span class="va">+        allow_single_file = True,</span></span>
+<span id="cb18-16"><a href="#cb18-16"></a><span class="va">+        cfg = &quot;exec&quot;,</span></span>
+<span id="cb18-17"><a href="#cb18-17"></a><span class="va">+        default = &quot;@babashka//:bb&quot;,</span></span>
+<span id="cb18-18"><a href="#cb18-18"></a><span class="va">+    ),</span></span>
+<span id="cb18-19"><a href="#cb18-19"></a><span class="va">+}</span></span>
+<span id="cb18-20"><a href="#cb18-20"></a><span class="va">+</span></span>
+<span id="cb18-21"><a href="#cb18-21"></a> bb_binary = rule(</span>
+<span id="cb18-22"><a href="#cb18-22"></a>     implementation = _bb_binary_impl,</span>
+<span id="cb18-23"><a href="#cb18-23"></a>     executable = True,</span>
+<span id="cb18-24"><a href="#cb18-24"></a><span class="st">-    attrs = {</span></span>
+<span id="cb18-25"><a href="#cb18-25"></a><span class="st">-        &quot;src&quot;: attr.label(</span></span>
+<span id="cb18-26"><a href="#cb18-26"></a><span class="st">-            allow_single_file = [&quot;.clj&quot;],</span></span>
+<span id="cb18-27"><a href="#cb18-27"></a><span class="st">-            mandatory = True,</span></span>
+<span id="cb18-28"><a href="#cb18-28"></a><span class="st">-        ),</span></span>
+<span id="cb18-29"><a href="#cb18-29"></a><span class="st">-        &quot;arguments&quot;: attr.string_list(),</span></span>
+<span id="cb18-30"><a href="#cb18-30"></a><span class="st">-        &quot;_bb&quot;: attr.label(</span></span>
+<span id="cb18-31"><a href="#cb18-31"></a><span class="st">-            executable = True,</span></span>
+<span id="cb18-32"><a href="#cb18-32"></a><span class="st">-            allow_single_file = True,</span></span>
+<span id="cb18-33"><a href="#cb18-33"></a><span class="st">-            cfg = &quot;exec&quot;,</span></span>
+<span id="cb18-34"><a href="#cb18-34"></a><span class="st">-            default = &quot;@babashka//:bb&quot;,</span></span>
+<span id="cb18-35"><a href="#cb18-35"></a><span class="st">-        ),</span></span>
+<span id="cb18-36"><a href="#cb18-36"></a><span class="st">-    },</span></span>
+<span id="cb18-37"><a href="#cb18-37"></a><span class="va">+    attrs = EXEC_ATTRS,</span></span>
+<span id="cb18-38"><a href="#cb18-38"></a><span class="va">+)</span></span>
+<span id="cb18-39"><a href="#cb18-39"></a><span class="va">+</span></span>
+<span id="cb18-40"><a href="#cb18-40"></a><span class="va">+bb_test = rule(</span></span>
+<span id="cb18-41"><a href="#cb18-41"></a><span class="va">+    implementation = _bb_binary_impl,</span></span>
+<span id="cb18-42"><a href="#cb18-42"></a><span class="va">+    test = True,</span></span>
+<span id="cb18-43"><a href="#cb18-43"></a><span class="va">+    attrs = EXEC_ATTRS,</span></span>
+<span id="cb18-44"><a href="#cb18-44"></a> )</span></code></pre></div>
+<p>Our <code>bb_test</code> rule is in fact so similar to the <code>bb_binary</code> rule that we can use the same attributes and implementation function.</p>
+<p>We can use this rule to write a test that all our Clojure files are named in the atavistic-seeming naming convention inherited from its origins on the JVM: that source file paths and names may not contain dashes.</p>
+<p>This script receives the files in the current directory as command line arguments. It first removes all files that aren't Clojure files at <code>(1)</code> and then checks if any of those remaining have paths that contain any but the allowed characters at <code>(2)</code>.</p>
+<p>If any are found, it prints their names to stdout at <code>(3)</code> before indicating with a non-zero exit status, indicating failure of the test at <code>(4)</code>.</p>
+<div class="sourceCode" id="cb19"><pre class="sourceCode diff"><code class="sourceCode diff"><span id="cb19-1"><a href="#cb19-1"></a><span class="kw">--- BUILD.bazel.2</span></span>
+<span id="cb19-2"><a href="#cb19-2"></a><span class="dt">+++ BUILD.bazel.3</span></span>
+<span id="cb19-3"><a href="#cb19-3"></a><span class="dt">@@ -1,5 +1,5 @@</span></span>
+<span id="cb19-4"><a href="#cb19-4"></a> # BUILD.bazel</span>
+<span id="cb19-5"><a href="#cb19-5"></a><span class="st">-load(&quot;//:babashka.bzl&quot;, &quot;bb_genrule&quot;, &quot;bb_binary&quot;)</span></span>
+<span id="cb19-6"><a href="#cb19-6"></a><span class="va">+load(&quot;//:babashka.bzl&quot;, &quot;bb_genrule&quot;, &quot;bb_binary&quot;, &quot;bb_test&quot;)</span></span>
+<span id="cb19-7"><a href="#cb19-7"></a></span>
+<span id="cb19-8"><a href="#cb19-8"></a> bb_genrule(</span>
+<span id="cb19-9"><a href="#cb19-9"></a>     name = &quot;babashka_metadata&quot;,</span>
+<span id="cb19-10"><a href="#cb19-10"></a><span class="dt">@@ -13,4 +13,10 @@</span></span>
+<span id="cb19-11"><a href="#cb19-11"></a> bb_binary(</span>
+<span id="cb19-12"><a href="#cb19-12"></a>     name = &quot;say_hello&quot;,</span>
+<span id="cb19-13"><a href="#cb19-13"></a>     src = &quot;:hello.clj&quot;,</span>
+<span id="cb19-14"><a href="#cb19-14"></a><span class="va">+)</span></span>
+<span id="cb19-15"><a href="#cb19-15"></a><span class="va">+</span></span>
+<span id="cb19-16"><a href="#cb19-16"></a><span class="va">+bb_test(</span></span>
+<span id="cb19-17"><a href="#cb19-17"></a><span class="va">+    name = &quot;check_filenames&quot;,</span></span>
+<span id="cb19-18"><a href="#cb19-18"></a><span class="va">+    src = &quot;:check_filenames.clj&quot;,</span></span>
+<span id="cb19-19"><a href="#cb19-19"></a><span class="va">+    arguments = glob([&quot;*&quot;, &quot;.*&quot;]),  # (1)</span></span>
+<span id="cb19-20"><a href="#cb19-20"></a> )</span></code></pre></div>
+<p>By using the <code>glob</code> function (at <code>(1)</code>), we inject all files in the directory as arguments to the test.</p>
+<p>If we create a file that violates our criteria for a valid filename and run the test, we can see the test fail, and the report stating which file caused it to:</p>
+<pre><code>$ touch foo-bar.clj
+
+$ bazel test --test_output=errors //:check_filenames  
+INFO: Build option --test_sharding_strategy has changed, discarding analysis cache.
+INFO: Analyzed target //:check_filenames (0 packages loaded, 281 targets configured).
+INFO: Found 1 test target...
+FAIL: //:check_filenames (see $LONGPATH/testlogs/check_filenames/test.log)
+INFO: From Testing //:check_filenames:
+==================== Test output for //:check_filenames:
+++ exec external/babashka/bb check_filenames.clj .gitignore BUILD.bazel DUMMY WORKSPACE babashka.bzl check_filenames.clj foo-bar.clj get_babashka_metadata.clj hello.clj
+Files with invalid paths:
+foo-bar.clj
+================================================================================
+Target //:check_filenames up-to-date:
+  bazel-bin/check_filenames
+INFO: Elapsed time: 0.327s, Critical Path: 0.11s
+INFO: 2 processes: 2 linux-sandbox.
+INFO: Build completed, 1 test FAILED, 2 total actions
+//:check_filenames                                                       FAILED in 0.1s
+  $LONGPATH/testlogs/check_filenames/test.log
+
+INFO: Build completed, 1 test FAILED, 2 total actions
+</code></pre>
+<p>After we delete the offending file, the test succeeds:</p>
+<pre><code>$ rm -f foo-bar.clj
+
+$ bazel test --test_output=errors //:check_filenames
+INFO: Analyzed target //:check_filenames (4 packages loaded, 7 targets configured).
+INFO: Found 1 test target...
+Target //:check_filenames up-to-date:
+  bazel-bin/check_filenames
+INFO: Elapsed time: 0.264s, Critical Path: 0.10s
+INFO: 3 processes: 1 internal, 2 linux-sandbox.
+INFO: Build completed successfully, 3 total actions
+//:check_filenames                                                       PASSED in 0.1s
+
+Executed 1 out of 1 test: 1 test passes.
+INFO: Build completed successfully, 3 total actions
+</code></pre>
+<p>Further steps for this rule might be to also accept a <code>data</code> attribute as well as implementing a runner script so that users may write tests in the usual <code>clojure.test</code> style.</p>
+</section>
+<section id="from-cupertino-with-love-bb_toolchain" class="level1">
+<h1>From Cupertino, with Love: <code>bb_toolchain</code></h1>
+<p>The last issue that remains is that this set of rules is only usable on Linux machines. It doesn't work on macOS devices, and let's not even mention other operating systems!</p>
+<p>To remedy this, we can take advantage of a feature built into Bazel: toolchains.</p>
+<p>Toolchains address the problem of providing different versions for some of our tools, depending on what platform we are on.<span><label for="sn-5" class="margin-toggle sidenote-number"></label><input type="checkbox" id="sn-5" class="margin-toggle"/><span class="sidenote">They can also be used in more sophisticated ways to <a href="https://docs.bazel.build/versions/main/platforms-intro.html">enable cross-compilation</a>.<br />
+<br />
+</span></span></p>
+<p>Defining a new toolchain involves implementing a new rule for that toolchain, creating targets with that rule for each platform we want to support, and then registering those in our <code>WORKSPACE</code> file.</p>
+<section id="implementing-the-toolchain-rule" class="level2">
+<h2>Implementing the toolchain rule</h2>
+<div class="sourceCode" id="cb22"><pre class="sourceCode diff"><code class="sourceCode diff"><span id="cb22-1"><a href="#cb22-1"></a><span class="kw">--- babashka.bzl.6</span></span>
+<span id="cb22-2"><a href="#cb22-2"></a><span class="dt">+++ babashka.bzl.7</span></span>
+<span id="cb22-3"><a href="#cb22-3"></a><span class="dt">@@ -1,4 +1,20 @@</span></span>
+<span id="cb22-4"><a href="#cb22-4"></a> # babashka.bzl</span>
+<span id="cb22-5"><a href="#cb22-5"></a><span class="va">+def _bb_toolchain(ctx):</span></span>
+<span id="cb22-6"><a href="#cb22-6"></a><span class="va">+    return platform_common.ToolchainInfo(</span></span>
+<span id="cb22-7"><a href="#cb22-7"></a><span class="va">+        bb = ctx.executable.bb,   # (1)</span></span>
+<span id="cb22-8"><a href="#cb22-8"></a><span class="va">+    )</span></span>
+<span id="cb22-9"><a href="#cb22-9"></a><span class="va">+</span></span>
+<span id="cb22-10"><a href="#cb22-10"></a><span class="va">+bb_toolchain = rule(</span></span>
+<span id="cb22-11"><a href="#cb22-11"></a><span class="va">+    implementation = _bb_toolchain,</span></span>
+<span id="cb22-12"><a href="#cb22-12"></a><span class="va">+    attrs = {</span></span>
+<span id="cb22-13"><a href="#cb22-13"></a><span class="va">+        &quot;bb&quot;: attr.label(         # (2)</span></span>
+<span id="cb22-14"><a href="#cb22-14"></a><span class="va">+            executable = True,</span></span>
+<span id="cb22-15"><a href="#cb22-15"></a><span class="va">+            allow_single_file = True,</span></span>
+<span id="cb22-16"><a href="#cb22-16"></a><span class="va">+            cfg = &quot;exec&quot;,</span></span>
+<span id="cb22-17"><a href="#cb22-17"></a><span class="va">+        ),</span></span>
+<span id="cb22-18"><a href="#cb22-18"></a><span class="va">+    },</span></span>
+<span id="cb22-19"><a href="#cb22-19"></a><span class="va">+)</span></span>
+<span id="cb22-20"><a href="#cb22-20"></a><span class="va">+</span></span>
+<span id="cb22-21"><a href="#cb22-21"></a> def _bb_genrule_impl(ctx):</span>
+<span id="cb22-22"><a href="#cb22-22"></a>     ctx.actions.run(</span>
+<span id="cb22-23"><a href="#cb22-23"></a>         inputs = [ctx.file.script] + ctx.files.data,</span></code></pre></div>
+<p>The implementation just returns a <code>platform_common.ToolchainInfo</code> provider. This provider accepts arbitrary fields, in our case we only have one for the <code>bb</code> executable.</p>
+<p>Our rule interface therefore only has one attribute, and it should look very similar to the <code>_bb</code> attribute of the rules we implemented already, save for the <code>default</code> value.</p>
+</section>
+<section id="installing-the-toolchain" class="level2">
+<h2>Installing the toolchain</h2>
+<p>Before we can install the toolchain, we should make sure the executable will be available for all the platforms that we want to support:</p>
+<figure class="fullwidth">
+<div class="sourceCode" id="cb23"><pre class="sourceCode diff"><code class="sourceCode diff"><span id="cb23-1"><a href="#cb23-1"></a><span class="kw">--- WORKSPACE.0</span></span>
+<span id="cb23-2"><a href="#cb23-2"></a><span class="dt">+++ WORKSPACE.1</span></span>
+<span id="cb23-3"><a href="#cb23-3"></a><span class="dt">@@ -2,8 +2,15 @@</span></span>
+<span id="cb23-4"><a href="#cb23-4"></a> load(&quot;@bazel_tools//tools/build_defs/repo:http.bzl&quot;, &quot;http_archive&quot;)</span>
+<span id="cb23-5"><a href="#cb23-5"></a></span>
+<span id="cb23-6"><a href="#cb23-6"></a> http_archive(</span>
+<span id="cb23-7"><a href="#cb23-7"></a><span class="st">-    name = &quot;babashka&quot;,</span></span>
+<span id="cb23-8"><a href="#cb23-8"></a><span class="va">+    name = &quot;babashka-linux&quot;,</span></span>
+<span id="cb23-9"><a href="#cb23-9"></a>     build_file_content = &quot;&quot;&quot;exports_files([&quot;bb&quot;])&quot;&quot;&quot;,</span>
+<span id="cb23-10"><a href="#cb23-10"></a>     url = &quot;https://github.com/babashka/babashka/releases/download/v0.4.6/babashka-0.4.6-linux-amd64-static.tar.gz&quot;,</span>
+<span id="cb23-11"><a href="#cb23-11"></a>     sha256 = &quot;aac1be5a441945ebcc6042d2283ac26399895da090437f84123a3124b72fb25a&quot;,</span>
+<span id="cb23-12"><a href="#cb23-12"></a><span class="va">+)</span></span>
+<span id="cb23-13"><a href="#cb23-13"></a><span class="va">+</span></span>
+<span id="cb23-14"><a href="#cb23-14"></a><span class="va">+http_archive(</span></span>
+<span id="cb23-15"><a href="#cb23-15"></a><span class="va">+    name = &quot;babashka-macos&quot;,</span></span>
+<span id="cb23-16"><a href="#cb23-16"></a><span class="va">+    build_file_content = &quot;&quot;&quot;exports_files([&quot;bb&quot;])&quot;&quot;&quot;,</span></span>
+<span id="cb23-17"><a href="#cb23-17"></a><span class="va">+    url = &quot;https://github.com/babashka/babashka/releases/download/v0.4.6/babashka-0.4.6-macos-amd64.tar.gz&quot;,</span></span>
+<span id="cb23-18"><a href="#cb23-18"></a><span class="va">+    sha256 = &quot;8fd778592b0f821b69096fbbb9838f7b24c0f9090e68d0296098facab79d7c5a&quot;,</span></span>
+<span id="cb23-19"><a href="#cb23-19"></a> )</span></code></pre></div>
+</figure>
+<p>Now that we have the required files, we can instantiate the toolchain rule twice:</p>
+<div class="sourceCode" id="cb24"><pre class="sourceCode diff"><code class="sourceCode diff"><span id="cb24-1"><a href="#cb24-1"></a><span class="kw">--- BUILD.bazel.3</span></span>
+<span id="cb24-2"><a href="#cb24-2"></a><span class="dt">+++ BUILD.bazel.4</span></span>
+<span id="cb24-3"><a href="#cb24-3"></a><span class="dt">@@ -1,5 +1,35 @@</span></span>
+<span id="cb24-4"><a href="#cb24-4"></a> # BUILD.bazel</span>
+<span id="cb24-5"><a href="#cb24-5"></a><span class="st">-load(&quot;//:babashka.bzl&quot;, &quot;bb_genrule&quot;, &quot;bb_binary&quot;, &quot;bb_test&quot;)</span></span>
+<span id="cb24-6"><a href="#cb24-6"></a><span class="va">+load(&quot;//:babashka.bzl&quot;, &quot;bb_genrule&quot;, &quot;bb_binary&quot;, &quot;bb_test&quot;, &quot;bb_toolchain&quot;)</span></span>
+<span id="cb24-7"><a href="#cb24-7"></a><span class="va">+</span></span>
+<span id="cb24-8"><a href="#cb24-8"></a><span class="va">+toolchain_type(name = &quot;babashka_toolchain&quot;)  # (1)</span></span>
+<span id="cb24-9"><a href="#cb24-9"></a><span class="va">+</span></span>
+<span id="cb24-10"><a href="#cb24-10"></a><span class="va">+bb_toolchain(  # (2)</span></span>
+<span id="cb24-11"><a href="#cb24-11"></a><span class="va">+    name = &quot;bb_linux&quot;,</span></span>
+<span id="cb24-12"><a href="#cb24-12"></a><span class="va">+    bb = &quot;@babashka-linux//:bb&quot;,</span></span>
+<span id="cb24-13"><a href="#cb24-13"></a><span class="va">+)</span></span>
+<span id="cb24-14"><a href="#cb24-14"></a><span class="va">+</span></span>
+<span id="cb24-15"><a href="#cb24-15"></a><span class="va">+toolchain(</span></span>
+<span id="cb24-16"><a href="#cb24-16"></a><span class="va">+    name = &quot;bb_linux_toolchain&quot;,</span></span>
+<span id="cb24-17"><a href="#cb24-17"></a><span class="va">+    exec_compatible_with = [</span></span>
+<span id="cb24-18"><a href="#cb24-18"></a><span class="va">+        &quot;@platforms//os:linux&quot;,  # (3)</span></span>
+<span id="cb24-19"><a href="#cb24-19"></a><span class="va">+    ],</span></span>
+<span id="cb24-20"><a href="#cb24-20"></a><span class="va">+    toolchain = &quot;:bb_linux&quot;,</span></span>
+<span id="cb24-21"><a href="#cb24-21"></a><span class="va">+    toolchain_type = &quot;:babashka_toolchain&quot;,  # (4)</span></span>
+<span id="cb24-22"><a href="#cb24-22"></a><span class="va">+)</span></span>
+<span id="cb24-23"><a href="#cb24-23"></a><span class="va">+</span></span>
+<span id="cb24-24"><a href="#cb24-24"></a><span class="va">+bb_toolchain(</span></span>
+<span id="cb24-25"><a href="#cb24-25"></a><span class="va">+    name = &quot;bb_macos&quot;,</span></span>
+<span id="cb24-26"><a href="#cb24-26"></a><span class="va">+    bb = &quot;@babashka-macos//:bb&quot;,</span></span>
+<span id="cb24-27"><a href="#cb24-27"></a><span class="va">+)</span></span>
+<span id="cb24-28"><a href="#cb24-28"></a><span class="va">+</span></span>
+<span id="cb24-29"><a href="#cb24-29"></a><span class="va">+toolchain(</span></span>
+<span id="cb24-30"><a href="#cb24-30"></a><span class="va">+    name = &quot;bb_macos_toolchain&quot;,</span></span>
+<span id="cb24-31"><a href="#cb24-31"></a><span class="va">+    exec_compatible_with = [</span></span>
+<span id="cb24-32"><a href="#cb24-32"></a><span class="va">+        &quot;@platforms//os:macos&quot;,</span></span>
+<span id="cb24-33"><a href="#cb24-33"></a><span class="va">+    ],</span></span>
+<span id="cb24-34"><a href="#cb24-34"></a><span class="va">+    toolchain = &quot;:bb_macos&quot;,</span></span>
+<span id="cb24-35"><a href="#cb24-35"></a><span class="va">+    toolchain_type = &quot;:babashka_toolchain&quot;,</span></span>
+<span id="cb24-36"><a href="#cb24-36"></a><span class="va">+)</span></span>
+<span id="cb24-37"><a href="#cb24-37"></a></span>
+<span id="cb24-38"><a href="#cb24-38"></a> bb_genrule(</span>
+<span id="cb24-39"><a href="#cb24-39"></a>     name = &quot;babashka_metadata&quot;,</span></code></pre></div>
+<p>To group the two instances, we define a new toolchain type at <code>(1)</code>.</p>
+<p>After instantiating the <code>bb_toolchain</code> rule, we need to also call the built-in <code>toolchain</code> rule to indicate compatibility (at <code>(3)</code>) and type (at <code>(4)</code>).</p>
+<p>With the toolchains created, we need to register them for use in the <code>WORKSPACE</code> file:</p>
+<figure class="fullwidth">
+<div class="sourceCode" id="cb25"><pre class="sourceCode diff"><code class="sourceCode diff"><span id="cb25-1"><a href="#cb25-1"></a><span class="kw">--- WORKSPACE.1</span></span>
+<span id="cb25-2"><a href="#cb25-2"></a><span class="dt">+++ WORKSPACE.2</span></span>
+<span id="cb25-3"><a href="#cb25-3"></a><span class="dt">@@ -14,3 +14,8 @@</span></span>
+<span id="cb25-4"><a href="#cb25-4"></a>     url = &quot;https://github.com/babashka/babashka/releases/download/v0.4.6/babashka-0.4.6-macos-amd64.tar.gz&quot;,</span>
+<span id="cb25-5"><a href="#cb25-5"></a>     sha256 = &quot;8fd778592b0f821b69096fbbb9838f7b24c0f9090e68d0296098facab79d7c5a&quot;,</span>
+<span id="cb25-6"><a href="#cb25-6"></a> )</span>
+<span id="cb25-7"><a href="#cb25-7"></a><span class="va">+</span></span>
+<span id="cb25-8"><a href="#cb25-8"></a><span class="va">+register_toolchains(</span></span>
+<span id="cb25-9"><a href="#cb25-9"></a><span class="va">+    &quot;//:bb_linux_toolchain&quot;,  # (1)</span></span>
+<span id="cb25-10"><a href="#cb25-10"></a><span class="va">+    &quot;//:bb_macos_toolchain&quot;,</span></span>
+<span id="cb25-11"><a href="#cb25-11"></a><span class="va">+)</span></span></code></pre></div>
+</figure>
+<p>Note that the toolchain name that we specify at <code>(1)</code> is that of the <code>toolchain</code> rule, not of the <code>bb_toolchain</code> rule!</p>
+</section>
+<section id="using-the-toolchain" class="level2">
+<h2>Using the toolchain</h2>
+<p>Lastly, we need to change our existing rules to take advantage of the new toolchain:</p>
+<div class="sourceCode" id="cb26"><pre class="sourceCode diff"><code class="sourceCode diff"><span id="cb26-1"><a href="#cb26-1"></a><span class="kw">--- babashka.bzl.7</span></span>
+<span id="cb26-2"><a href="#cb26-2"></a><span class="dt">+++ babashka.bzl.8</span></span>
+<span id="cb26-3"><a href="#cb26-3"></a><span class="dt">@@ -16,10 +16,11 @@</span></span>
+<span id="cb26-4"><a href="#cb26-4"></a> )</span>
+<span id="cb26-5"><a href="#cb26-5"></a></span>
+<span id="cb26-6"><a href="#cb26-6"></a> def _bb_genrule_impl(ctx):</span>
+<span id="cb26-7"><a href="#cb26-7"></a><span class="va">+    toolchain = ctx.toolchains[&quot;//:babashka_toolchain&quot;]   # (1)</span></span>
+<span id="cb26-8"><a href="#cb26-8"></a>     ctx.actions.run(</span>
+<span id="cb26-9"><a href="#cb26-9"></a>         inputs = [ctx.file.script] + ctx.files.data,</span>
+<span id="cb26-10"><a href="#cb26-10"></a>         outputs = [ctx.outputs.out],</span>
+<span id="cb26-11"><a href="#cb26-11"></a><span class="st">-        executable = ctx.executable._bb,</span></span>
+<span id="cb26-12"><a href="#cb26-12"></a><span class="va">+        executable = toolchain.bb,                        # (2)</span></span>
+<span id="cb26-13"><a href="#cb26-13"></a>         arguments = [</span>
+<span id="cb26-14"><a href="#cb26-14"></a>             ctx.file.script.path,</span>
+<span id="cb26-15"><a href="#cb26-15"></a>             &quot;&quot;&quot;{{</span>
+<span id="cb26-16"><a href="#cb26-16"></a><span class="dt">@@ -38,16 +39,12 @@</span></span>
+<span id="cb26-17"><a href="#cb26-17"></a>         &quot;script&quot;: attr.label(allow_single_file = [&quot;.clj&quot;], mandatory = True),</span>
+<span id="cb26-18"><a href="#cb26-18"></a>         &quot;out&quot;: attr.output(mandatory = True),</span>
+<span id="cb26-19"><a href="#cb26-19"></a>         &quot;data&quot;: attr.label_list(allow_files = True),</span>
+<span id="cb26-20"><a href="#cb26-20"></a><span class="st">-        &quot;_bb&quot;: attr.label(</span></span>
+<span id="cb26-21"><a href="#cb26-21"></a><span class="st">-            executable = True,</span></span>
+<span id="cb26-22"><a href="#cb26-22"></a><span class="st">-            allow_single_file = True,</span></span>
+<span id="cb26-23"><a href="#cb26-23"></a><span class="st">-            cfg = &quot;exec&quot;,</span></span>
+<span id="cb26-24"><a href="#cb26-24"></a><span class="st">-            default = &quot;@babashka//:bb&quot;,</span></span>
+<span id="cb26-25"><a href="#cb26-25"></a><span class="st">-        ),</span></span>
+<span id="cb26-26"><a href="#cb26-26"></a>     },</span>
+<span id="cb26-27"><a href="#cb26-27"></a><span class="va">+    toolchains = [&quot;//:babashka_toolchain&quot;],               # (3)</span></span>
+<span id="cb26-28"><a href="#cb26-28"></a> )</span>
+<span id="cb26-29"><a href="#cb26-29"></a></span>
+<span id="cb26-30"><a href="#cb26-30"></a> def _bb_binary_impl(ctx):</span>
+<span id="cb26-31"><a href="#cb26-31"></a><span class="va">+    toolchain = ctx.toolchains[&quot;//:babashka_toolchain&quot;] </span></span>
+<span id="cb26-32"><a href="#cb26-32"></a>     executable = ctx.actions.declare_file(ctx.label.name)</span>
+<span id="cb26-33"><a href="#cb26-33"></a>     ctx.actions.write(</span>
+<span id="cb26-34"><a href="#cb26-34"></a>         output = executable,</span>
+<span id="cb26-35"><a href="#cb26-35"></a><span class="dt">@@ -56,7 +53,7 @@</span></span>
+<span id="cb26-36"><a href="#cb26-36"></a>         set -x</span>
+<span id="cb26-37"><a href="#cb26-37"></a>         exec {bb} {src} {arguments} &quot;$@&quot;</span>
+<span id="cb26-38"><a href="#cb26-38"></a>         &quot;&quot;&quot;.format(</span>
+<span id="cb26-39"><a href="#cb26-39"></a><span class="st">-            bb = ctx.executable._bb.path,</span></span>
+<span id="cb26-40"><a href="#cb26-40"></a><span class="va">+            bb = toolchain.bb.path,</span></span>
+<span id="cb26-41"><a href="#cb26-41"></a>             src = ctx.file.src.path,</span>
+<span id="cb26-42"><a href="#cb26-42"></a>             arguments = &quot; &quot;.join(ctx.attr.arguments),</span>
+<span id="cb26-43"><a href="#cb26-43"></a>         ),</span>
+<span id="cb26-44"><a href="#cb26-44"></a><span class="dt">@@ -64,7 +61,7 @@</span></span>
+<span id="cb26-45"><a href="#cb26-45"></a></span>
+<span id="cb26-46"><a href="#cb26-46"></a>     return DefaultInfo(</span>
+<span id="cb26-47"><a href="#cb26-47"></a>         executable = executable,</span>
+<span id="cb26-48"><a href="#cb26-48"></a><span class="st">-        runfiles = ctx.runfiles(files = [ctx.executable._bb, ctx.file.src]),</span></span>
+<span id="cb26-49"><a href="#cb26-49"></a><span class="va">+        runfiles = ctx.runfiles(files = [toolchain.bb, ctx.file.src]),</span></span>
+<span id="cb26-50"><a href="#cb26-50"></a>     )</span>
+<span id="cb26-51"><a href="#cb26-51"></a></span>
+<span id="cb26-52"><a href="#cb26-52"></a> EXEC_ATTRS = {</span>
+<span id="cb26-53"><a href="#cb26-53"></a><span class="dt">@@ -73,22 +70,18 @@</span></span>
+<span id="cb26-54"><a href="#cb26-54"></a>         mandatory = True,</span>
+<span id="cb26-55"><a href="#cb26-55"></a>     ),</span>
+<span id="cb26-56"><a href="#cb26-56"></a>     &quot;arguments&quot;: attr.string_list(),</span>
+<span id="cb26-57"><a href="#cb26-57"></a><span class="st">-    &quot;_bb&quot;: attr.label(</span></span>
+<span id="cb26-58"><a href="#cb26-58"></a><span class="st">-        executable = True,</span></span>
+<span id="cb26-59"><a href="#cb26-59"></a><span class="st">-        allow_single_file = True,</span></span>
+<span id="cb26-60"><a href="#cb26-60"></a><span class="st">-        cfg = &quot;exec&quot;,</span></span>
+<span id="cb26-61"><a href="#cb26-61"></a><span class="st">-        default = &quot;@babashka//:bb&quot;,</span></span>
+<span id="cb26-62"><a href="#cb26-62"></a><span class="st">-    ),</span></span>
+<span id="cb26-63"><a href="#cb26-63"></a> }</span>
+<span id="cb26-64"><a href="#cb26-64"></a></span>
+<span id="cb26-65"><a href="#cb26-65"></a> bb_binary = rule(</span>
+<span id="cb26-66"><a href="#cb26-66"></a>     implementation = _bb_binary_impl,</span>
+<span id="cb26-67"><a href="#cb26-67"></a>     executable = True,</span>
+<span id="cb26-68"><a href="#cb26-68"></a>     attrs = EXEC_ATTRS,</span>
+<span id="cb26-69"><a href="#cb26-69"></a><span class="va">+    toolchains = [&quot;//:babashka_toolchain&quot;],</span></span>
+<span id="cb26-70"><a href="#cb26-70"></a> )</span>
+<span id="cb26-71"><a href="#cb26-71"></a></span>
+<span id="cb26-72"><a href="#cb26-72"></a> bb_test = rule(</span>
+<span id="cb26-73"><a href="#cb26-73"></a>     implementation = _bb_binary_impl,</span>
+<span id="cb26-74"><a href="#cb26-74"></a>     test = True,</span>
+<span id="cb26-75"><a href="#cb26-75"></a>     attrs = EXEC_ATTRS,</span>
+<span id="cb26-76"><a href="#cb26-76"></a><span class="va">+    toolchains = [&quot;//:babashka_toolchain&quot;],</span></span>
+<span id="cb26-77"><a href="#cb26-77"></a> )</span></code></pre></div>
+<p>This involves adding the toolchain to the rule (at <code>(3)</code>) and then looking it up inside the implementation (at <code>(1)</code>) to replace all references to what was previously the <code>_bb</code> attribute.</p>
+<p>This also means we can remove the <code>_bb</code> attribute completely.</p>
+<p>If we did everything correctly our build should work as previously, but now our comrades on macOS can benefit from the rules as well. I don't have a Mac, so you'll just have to believe me that it works!</p>
+<pre><code>$ bazel build //:babashka_metadata
+INFO: Analyzed target //:babashka_metadata (0 packages loaded, 3 targets configured).
+INFO: Found 1 target...
+Target //:babashka_metadata up-to-date:
+  bazel-bin/bb-metadata.edn
+INFO: Elapsed time: 0.127s, Critical Path: 0.00s
+INFO: 1 process: 1 internal.
+INFO: Build completed successfully, 1 total action
+
+$ bazel run //:say_hello
+INFO: Analyzed target //:say_hello (0 packages loaded, 0 targets configured).
+INFO: Found 1 target...
+Target //:say_hello up-to-date:
+  bazel-bin/say_hello
+INFO: Elapsed time: 0.069s, Critical Path: 0.00s
+INFO: 1 process: 1 internal.
+INFO: Build completed successfully, 1 total action
+INFO: Build completed successfully, 1 total action
+++ exec external/babashka-linux/bb hello.clj
+hello there!
+</code></pre>
+</section>
+</section>
+<section id="epilogue" class="level1">
+<h1>Epilogue</h1>
+<p>In this form, this set of rules is already quite useful and can cover a varienty of tasks in a CICD pipeline. Some things could be done to make them even more useful:</p>
+<ul>
+<li>documenting all rule attributes</li>
+<li>adding tests for rules</li>
+<li>adding a flag to <code>bb_binary</code> to run the executable <em>outside</em> the sandbox, on the actual repository directory, as can be done using some <a href="https://docs.bazel.build/versions/main/user-manual.html#run ">shell variables that are available to executable rules</a>.<span><label for="sn-6" class="margin-toggle sidenote-number"></label><input type="checkbox" id="sn-6" class="margin-toggle"/><span class="sidenote">This is not possible for tests however.<br />
+<br />
+</span></span></li>
+</ul>
+</section>
+</article>
+<a href="https://github.com/jgertm/jgertm.github.io/edit/main/20210627-integrating-babashka-with-bazel.org">Edit this page</a>
+</body>
+</html>
