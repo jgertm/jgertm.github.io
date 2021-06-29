@@ -34,8 +34,11 @@ The final version of the code produced herein can be found [[https://github.com/
   - [[#including-more-dependencies][Including more dependencies]]
 - [[#performing-side-effects-bb_binary][Performing side-effects: ~bb_binary~]]
 - [[#checking-artifacts-bb_test][Checking artifacts: ~bb_test~]]
-- [[#greetings-to-cupertino-bb_toolchain][Greetings to Cupertino: ~bb_toolchain~]]
-- [[#bonus-round][Bonus round]]
+- [[#from-cupertino-with-love-bb_toolchain][From Cupertino, with Love: ~bb_toolchain~]]
+  - [[#implementing-the-toolchain-rule][Implementing the toolchain rule]]
+  - [[#installing-the-toolchain][Installing the toolchain]]
+  - [[#using-the-toolchain][Using the toolchain]]
+- [[#epilogue][Epilogue]]
 
 * Basic setup
 

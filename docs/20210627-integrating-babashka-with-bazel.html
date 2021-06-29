@@ -79,6 +79,7 @@ code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } /* Warni
   <!--[if lt IE 9]>
     <script src="//cdnjs.cloudflare.com/ajax/libs/html5shiv/3.7.3/html5shiv-printshiv.min.js"></script>
   <![endif]-->
+  <script>if(!sessionStorage.getItem("_swa")&&document.referrer.indexOf(location.protocol+"//"+location.host)!== 0){fetch("https://counter.dev/track?"+new URLSearchParams({referrer:document.referrer,screen:screen.width+"x"+screen.height,user:"jgertm",utcoffset:"-7"}))};sessionStorage.setItem("_swa","1");</script>
 </head>
 <body>
 <article>
@@ -114,8 +115,13 @@ code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } /* Warni
 </ul></li>
 <li><a href="#performing-side-effects-bb_binary">Performing side-effects: <code>bb_binary</code></a></li>
 <li><a href="#checking-artifacts-bb_test">Checking artifacts: <code>bb_test</code></a></li>
-<li><a href="#greetings-to-cupertino-bb_toolchain">Greetings to Cupertino: <code>bb_toolchain</code></a></li>
-<li><a href="#bonus-round">Bonus round</a></li>
+<li><a href="#from-cupertino-with-love-bb_toolchain">From Cupertino, with Love: <code>bb_toolchain</code></a>
+<ul>
+<li><a href="#implementing-the-toolchain-rule">Implementing the toolchain rule</a></li>
+<li><a href="#installing-the-toolchain">Installing the toolchain</a></li>
+<li><a href="#using-the-toolchain">Using the toolchain</a></li>
+</ul></li>
+<li><a href="#epilogue">Epilogue</a></li>
 </ul>
 </section>
 <section id="basic-setup" class="level1">
