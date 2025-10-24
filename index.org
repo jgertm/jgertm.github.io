@@ -5,7 +5,7 @@
 
 Hello. 
 
-My name is Tim, I'm a programmer at Splash Financial.
+My name is Tim, I'm a programmer at SandboxAQ.
 
 These are things I have written.
 
